@@ -12,9 +12,12 @@ import {
   TextInput,
   TouchableOpacity,
   View,
+  ActivityIndicator,
 } from "react-native";
 
 import { Ionicons } from "@expo/vector-icons";
+import { addClient } from "../../services/api/clientService";
+import { showSuccessToast, showErrorToast } from "../../utils/toast";
 
 const AddClientSheet = forwardRef((props, ref) => {
   const snapPoints = useMemo(() => ["90%"], []);
@@ -25,6 +28,11 @@ const AddClientSheet = forwardRef((props, ref) => {
   const [reference, setReference] = useState("");
   const [fullName, setFullName] = useState("");
   const [phone, setPhone] = useState("");
+  const [location, setLocation] = useState("");
+  const [caseType, setCaseType] = useState("");
+  const [remarks, setRemarks] = useState("");
+  const [isLoading, setIsLoading] = useState(false);
+  const [errors, setErrors] = useState({});
 
   const SheetTextInput = Platform.OS === "web" ? TextInput : BottomSheetTextInput;
 
@@ -35,6 +43,95 @@ const AddClientSheet = forwardRef((props, ref) => {
   const handleBlur = useCallback(() => {
     setFocusedField(null);
   }, []);
+
+  const validateForm = () => {
+    const newErrors = {};
+
+    if (!fullName.trim()) {
+      newErrors.fullname = "Full name is required";
+    }
+
+    if (!phone.trim()) {
+      newErrors.phone = "Phone number is required";
+    } else if (phone.trim().length < 10) {
+      newErrors.phone = "Phone number must be at least 10 digits";
+    }
+
+    if (!location.trim()) {
+      newErrors.location = "Location is required";
+    }
+
+    setErrors(newErrors);
+    return Object.keys(newErrors).length === 0;
+  };
+
+  const resetForm = () => {
+    setCallType("Incoming");
+    setLeadType("Warm");
+    setFullName("");
+    setPhone("");
+    setLocation("");
+    setReference("");
+    setCaseType("");
+    setRemarks("");
+    setErrors({});
+  };
+
+  const handleSaveClient = async () => {
+    // Clear previous errors
+    setErrors({});
+
+    // Validate form
+    if (!validateForm()) {
+      showErrorToast("Please fill in all required fields");
+      return;
+    }
+
+    setIsLoading(true);
+
+    try {
+      const clientData = {
+        call_type: callType.toLowerCase(),
+        lead_type: leadType.toLowerCase(),
+        fullname: fullName,
+        phone: phone,
+        location: location,
+        referance: reference,
+        case_type: caseType,
+        remarks: remarks,
+      };
+
+      const result = await addClient(clientData);
+
+      if (result.success) {
+        showSuccessToast(result.message || "Client added successfully!");
+
+        // Reset form
+        resetForm();
+
+        // Close sheet after a short delay
+        setTimeout(() => {
+          ref?.current?.close();
+        }, 500);
+
+        // Call onClientAdded callback if provided
+        props?.onClientAdded?.(result.data.data);
+      } else {
+        // Handle validation errors
+        if (result.validationErrors && Object.keys(result.validationErrors).length > 0) {
+          setErrors(result.validationErrors);
+          const firstError = Object.values(result.validationErrors)[0];
+          showErrorToast(Array.isArray(firstError) ? firstError[0] : firstError);
+        } else {
+          showErrorToast(result.message || "Failed to add client");
+        }
+      }
+    } catch (error) {
+      showErrorToast("An unexpected error occurred. Please try again.");
+    } finally {
+      setIsLoading(false);
+    }
+  };
 
   return (
     <BottomSheet
@@ -115,7 +212,7 @@ const AddClientSheet = forwardRef((props, ref) => {
                   <Ionicons
                     name={
                       item === "Cold"
-                        ? "snowflake"
+                        ? "snow-outline"
                         : item === "Warm"
                           ? "sunny"
                           : "flame"
@@ -137,55 +234,70 @@ const AddClientSheet = forwardRef((props, ref) => {
 
         {/* FULL NAME */}
         <View style={styles.section}>
-          <Text style={styles.label}>Full Name</Text>
+          <Text style={styles.label}>Full Name *</Text>
           <View
             style={[
               styles.inputContainer,
               focusedField === "name" && styles.inputContainerFocused,
+              errors.fullname && styles.inputContainerError,
             ]}
           >
             <Ionicons
               name="person"
               size={18}
-              color={focusedField === "name" ? "#3b82f6" : "#9ca3af"}
+              color={errors.fullname ? "#ef4444" : focusedField === "name" ? "#3b82f6" : "#9ca3af"}
               style={styles.inputIcon}
             />
             <SheetTextInput
               value={fullName}
-              onChangeText={setFullName}
+              onChangeText={(text) => {
+                setFullName(text);
+                if (errors.fullname) {
+                  setErrors({ ...errors, fullname: null });
+                }
+              }}
               placeholder="Rahul Sharma"
               placeholderTextColor="#d1d5db"
               style={styles.input}
               cursorColor="#3b82f6"
               selectionColor="#bfdbfe"
               caretHidden={false}
-              editable={true}
+              editable={!isLoading}
               onFocus={() => handleFocus("name")}
               onBlur={handleBlur}
               autoCapitalize="words"
               autoCorrect={false}
             />
           </View>
+          {errors.fullname && (
+            <Text style={styles.errorText}>{errors.fullname}</Text>
+          )}
         </View>
 
         {/* PHONE */}
         <View style={styles.section}>
-          <Text style={styles.label}>Phone</Text>
+          <Text style={styles.label}>Phone *</Text>
           <View
             style={[
               styles.inputContainer,
               focusedField === "phone" && styles.inputContainerFocused,
+              errors.phone && styles.inputContainerError,
             ]}
           >
             <Ionicons
               name="call"
               size={18}
-              color={focusedField === "phone" ? "#3b82f6" : "#9ca3af"}
+              color={errors.phone ? "#ef4444" : focusedField === "phone" ? "#3b82f6" : "#9ca3af"}
               style={styles.inputIcon}
             />
             <SheetTextInput
               value={phone}
-              onChangeText={setPhone}
+              onChangeText={(text) => {
+                setPhone(text);
+                if (errors.phone) {
+                  setErrors({ ...errors, phone: null });
+                }
+              }}
               placeholder="+91 98765 43210"
               placeholderTextColor="#d1d5db"
               keyboardType="phone-pad"
@@ -193,40 +305,54 @@ const AddClientSheet = forwardRef((props, ref) => {
               cursorColor="#3b82f6"
               selectionColor="#bfdbfe"
               caretHidden={false}
-              editable={true}
+              editable={!isLoading}
               onFocus={() => handleFocus("phone")}
               onBlur={handleBlur}
             />
           </View>
+          {errors.phone && (
+            <Text style={styles.errorText}>{errors.phone}</Text>
+          )}
         </View>
 
         {/* LOCATION */}
         <View style={styles.section}>
-          <Text style={styles.label}>Location</Text>
+          <Text style={styles.label}>Location *</Text>
           <View
             style={[
               styles.inputContainer,
               focusedField === "location" && styles.inputContainerFocused,
+              errors.location && styles.inputContainerError,
             ]}
           >
             <Ionicons
               name="location"
               size={18}
-              color={focusedField === "location" ? "#3b82f6" : "#9ca3af"}
+              color={errors.location ? "#ef4444" : focusedField === "location" ? "#3b82f6" : "#9ca3af"}
               style={styles.inputIcon}
             />
             <SheetTextInput
+              value={location}
+              onChangeText={(text) => {
+                setLocation(text);
+                if (errors.location) {
+                  setErrors({ ...errors, location: null });
+                }
+              }}
               placeholder="Mumbai, MH"
               placeholderTextColor="#d1d5db"
               style={styles.input}
               cursorColor="#3b82f6"
               selectionColor="#bfdbfe"
               caretHidden={false}
-              editable={true}
+              editable={!isLoading}
               onFocus={() => handleFocus("location")}
               onBlur={handleBlur}
             />
           </View>
+          {errors.location && (
+            <Text style={styles.errorText}>{errors.location}</Text>
+          )}
         </View>
 
         {/* REFERENCE */}
@@ -256,6 +382,7 @@ const AddClientSheet = forwardRef((props, ref) => {
               onBlur={handleBlur}
               autoCapitalize="words"
               autoCorrect={false}
+              editable={!isLoading}
             />
           </View>
         </View>
@@ -276,13 +403,15 @@ const AddClientSheet = forwardRef((props, ref) => {
               style={styles.inputIcon}
             />
             <SheetTextInput
+              value={caseType}
+              onChangeText={setCaseType}
               placeholder="Select case type"
               placeholderTextColor="#d1d5db"
               style={styles.input}
               cursorColor="#3b82f6"
               selectionColor="#bfdbfe"
               caretHidden={false}
-              editable={true}
+              editable={!isLoading}
               onFocus={() => handleFocus("caseType")}
               onBlur={handleBlur}
             />
@@ -301,13 +430,15 @@ const AddClientSheet = forwardRef((props, ref) => {
             <SheetTextInput
               multiline
               numberOfLines={4}
+              value={remarks}
+              onChangeText={setRemarks}
               placeholder="Add any additional notes..."
               placeholderTextColor="#d1d5db"
               style={styles.textArea}
               cursorColor="#3b82f6"
               selectionColor="#bfdbfe"
               caretHidden={false}
-              editable={true}
+              editable={!isLoading}
               onFocus={() => handleFocus("remarks")}
               onBlur={handleBlur}
             />
@@ -317,29 +448,21 @@ const AddClientSheet = forwardRef((props, ref) => {
         {/* SAVE */}
         <View style={styles.actionsContainer}>
           <TouchableOpacity
-            style={styles.secondaryButton}
+            style={[styles.saveButton, isLoading && styles.buttonDisabled]}
             activeOpacity={0.85}
-            onPress={() => {
-              props?.onCreateAppointment?.({ name: fullName, phone });
-            }}
+            disabled={isLoading}
+            onPress={handleSaveClient}
           >
-            <Ionicons name="calendar-outline" size={20} color="#3b82f6" />
-            <View style={styles.buttonTextContainer}>
-              <Text style={styles.secondaryLabel}>Create</Text>
-              <Text style={styles.secondaryText}>Appointment</Text>
-            </View>
-          </TouchableOpacity>
-
-          <TouchableOpacity style={styles.saveButton} activeOpacity={0.85}>
-            <Ionicons
-              name="checkmark-done"
-              size={20}
-              color="#fff"
-            />
-            <View style={styles.buttonTextContainer}>
-              <Text style={styles.saveLabel}>Save</Text>
-              <Text style={styles.saveText}>Client</Text>
-            </View>
+            {isLoading ? (
+              <ActivityIndicator size="small" color="#fff" />
+            ) : (
+              <>
+                <Ionicons name="checkmark-done" size={20} color="#fff" />
+                <View style={styles.buttonTextContainer}>
+                  <Text style={styles.saveLabel}>Save Client</Text>
+                </View>
+              </>
+            )}
           </TouchableOpacity>
         </View>
       </BottomSheetScrollView>
@@ -431,6 +554,19 @@ const styles = StyleSheet.create({
   inputContainerFocused: {
     backgroundColor: "#eff6ff",
     borderColor: "#3b82f6",
+  },
+
+  inputContainerError: {
+    borderColor: "#ef4444",
+    backgroundColor: "#fef2f2",
+  },
+
+  errorText: {
+    color: "#ef4444",
+    fontSize: 12,
+    fontWeight: "600",
+    marginTop: 6,
+    marginLeft: 4,
   },
 
   inputIcon: {
@@ -531,6 +667,10 @@ const styles = StyleSheet.create({
     shadowOpacity: 0.3,
     shadowRadius: 16,
     elevation: 8,
+  },
+
+  buttonDisabled: {
+    opacity: 0.6,
   },
 
   saveLabel: {

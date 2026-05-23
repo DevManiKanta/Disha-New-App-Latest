@@ -1,7 +1,7 @@
 import { router, Tabs } from "expo-router";
 import { Ionicons } from "@expo/vector-icons";
-import { TouchableOpacity, View, StyleSheet } from "react-native";
-import { useRef, useState } from "react";
+import { TouchableOpacity, StyleSheet } from "react-native";
+import { useRef } from "react";
 import { LinearGradient } from "expo-linear-gradient";
 import Animated, {
   useAnimatedStyle,
@@ -9,12 +9,9 @@ import Animated, {
   withSpring,
 } from "react-native-reanimated";
 import AddClientSheet from "../../components/AddClientSheet";
-import AddAppointmentSheet from "../../components/AddAppointmentSheet";
 
 export default function TabLayout() {
   const sheetRef = useRef(null);
-  const appointmentSheetRef = useRef(null);
-  const [appointmentPrefill, setAppointmentPrefill] = useState(null);
   const fabScale = useSharedValue(1);
 
   const openSheet = () => {
@@ -23,16 +20,6 @@ export default function TabLayout() {
       fabScale.value = withSpring(1, { damping: 8 });
     }, 100);
     sheetRef.current?.expand();
-  };
-
-  const openAppointmentSheet = () => {
-    appointmentSheetRef.current?.expand();
-  };
-
-  const openAppointmentFromClient = ({ name, phone }) => {
-    setAppointmentPrefill({ mode: "New", name: name || "", phone: phone || "" });
-    sheetRef.current?.close?.();
-    requestAnimationFrame(() => openAppointmentSheet());
   };
 
   const fabAnimatedStyle = useAnimatedStyle(() => ({
@@ -97,27 +84,9 @@ export default function TabLayout() {
             ),
           }}
         />
-
-        {/* APPOINTMENTS */}
-        <Tabs.Screen
-          name="appointments"
-          listeners={{
-            tabPress: (e) => {
-              e.preventDefault();
-              openAppointmentSheet();
-            },
-          }}
-          options={{
-            title: "Appointments",
-            tabBarIcon: ({ color, size }) => (
-              <Ionicons name="calendar" color={color} size={size} />
-            ),
-          }}
-        />
       </Tabs>
 
-      <AddClientSheet ref={sheetRef} onCreateAppointment={openAppointmentFromClient} />
-      <AddAppointmentSheet ref={appointmentSheetRef} prefill={appointmentPrefill} />
+      <AddClientSheet ref={sheetRef} />
     </>
   );
 }

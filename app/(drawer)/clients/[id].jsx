@@ -1,6 +1,6 @@
 import { Ionicons } from "@expo/vector-icons";
 import { useLocalSearchParams, useNavigation } from "expo-router";
-import { useEffect, useMemo, useState, useRef } from "react";
+import { useEffect, useState, useRef } from "react";
 import {
   ScrollView,
   StyleSheet,
@@ -9,10 +9,11 @@ import {
   View,
   Linking,
   Alert,
-  Clipboard,
   Modal,
   TextInput,
+  ActivityIndicator,
 } from "react-native";
+import * as Clipboard from 'expo-clipboard';
 import { useSafeAreaInsets } from "react-native-safe-area-context";
 import { LinearGradient } from "expo-linear-gradient";
 import Animated, {
@@ -20,77 +21,167 @@ import Animated, {
   FadeInUp,
 } from "react-native-reanimated";
 import AddAppointmentSheet from "../../components/AddAppointmentSheet";
-
-// Sample client data - in real app, fetch from API/database
-const CLIENTS_DATA = {
-  "1": {
-    id: "1",
-    name: "John Doe",
-    phone: "9876543210",
-    location: "HYD",
-    lead: "Hot",
-    type: "Incoming",
-    date: "Today",
-    email: "john.doe@example.com",
-    caseType: "Corporate Law",
-    reference: "LinkedIn",
-    remarks: "Interested in corporate restructuring services",
-    appointments: 3,
-    followups: 2,
-    lastContact: "Today at 10:30 AM",
-  },
-  "2": {
-    id: "2",
-    name: "Sarah Smith",
-    phone: "9999999999",
-    location: "Chicago",
-    lead: "Warm",
-    type: "Outgoing",
-    date: "Yesterday",
-    email: "sarah.smith@example.com",
-    caseType: "Family Law",
-    reference: "Referral",
-    remarks: "Seeking legal advice for divorce proceedings",
-    appointments: 2,
-    followups: 1,
-    lastContact: "Yesterday at 2:15 PM",
-  },
-  "3": {
-    id: "3",
-    name: "Michael Brown",
-    phone: "8888888888",
-    location: "Texas",
-    lead: "Cold",
-    type: "Incoming",
-    date: "This Week",
-    email: "michael.brown@example.com",
-    caseType: "Real Estate",
-    reference: "Google Search",
-    remarks: "Inquiry about property dispute resolution",
-    appointments: 1,
-    followups: 0,
-    lastContact: "3 days ago",
-  },
-};
+import { getClientDetails } from "../../../services/api/clientService";
+import { addFollowup } from "../../../services/api/followupService";
+import { showErrorToast, showSuccessToast } from "../../../utils/toast";
 
 export default function ClientDetailsScreen() {
   const insets = useSafeAreaInsets();
   const nav = useNavigation();
   const params = useLocalSearchParams();
   const appointmentSheetRef = useRef(null);
-  const [showPhoneOptions, setShowPhoneOptions] = useState(false);
   const [showFollowUpModal, setShowFollowUpModal] = useState(false);
   const [followUpMessage, setFollowUpMessage] = useState("");
   const [followUps, setFollowUps] = useState([]);
+  const [client, setClient] = useState(null);
+  const [isLoading, setIsLoading] = useState(true);
+  const [isSubmittingFollowup, setIsSubmittingFollowup] = useState(false);
 
   const clientId = params?.id;
-  const client = useMemo(() => {
-    return CLIENTS_DATA[clientId] || CLIENTS_DATA["1"];
+
+  // Fetch client details from API
+  useEffect(() => {
+    const fetchClientDetails = async () => {
+      if (!clientId) {
+        setIsLoading(false);
+        return;
+      }
+
+      try {
+        setIsLoading(true);
+        
+        // First try to get client details from dedicated endpoint
+        const result = await getClientDetails(clientId);
+
+        if (result.success && result.data?.data) {
+          const clientData = result.data.data;
+          
+          // Transform API data to match component expectations
+          const transformedClient = {
+            id: clientData.id,
+            name: clientData.fullname || "Unknown Client",
+            phone: clientData.phone || "N/A",
+            location: clientData.location || "N/A",
+            lead: clientData.lead_type || "Cold",
+            type: clientData.call_type || "Incoming",
+            email: clientData.email || "N/A",
+            caseType: clientData.case_type || "N/A",
+            reference: clientData.referance || "N/A", // Note: API uses 'referance'
+            remarks: clientData.remarks || "No remarks available",
+            appointments: clientData.appointments_count || 0,
+            followups: clientData.followups_count || 0,
+            lastContact: clientData.created_at 
+              ? new Date(clientData.created_at).toLocaleDateString() + " at " + new Date(clientData.created_at).toLocaleTimeString()
+              : "N/A",
+            date: clientData.created_at 
+              ? new Date(clientData.created_at).toLocaleDateString()
+              : "N/A",
+          };
+
+          setClient(transformedClient);
+        } else {
+          // If client details endpoint doesn't exist, try to get from client list
+          
+          // For now, create a basic client object with the ID
+          // In a real scenario, you might want to fetch the client list and find the specific client
+          setClient({
+            id: clientId,
+            name: `Client ${clientId}`,
+            phone: "N/A",
+            location: "N/A",
+            lead: "Cold",
+            type: "Incoming",
+            email: "N/A",
+            caseType: "N/A",
+            reference: "N/A",
+            remarks: "Client details endpoint not available. Please contact support.",
+            appointments: 0,
+            followups: 0,
+            lastContact: "N/A",
+            date: "N/A",
+          });
+          
+          showErrorToast("Client details not available. Showing basic information.");
+        }
+      } catch (error) {
+        showErrorToast("An unexpected error occurred");
+        
+        // Set a fallback client to prevent crashes
+        setClient({
+          id: clientId,
+          name: `Client ${clientId}`,
+          phone: "N/A",
+          location: "N/A",
+          lead: "Cold",
+          type: "Incoming",
+          email: "N/A",
+          caseType: "N/A",
+          reference: "N/A",
+          remarks: "Error loading client details",
+          appointments: 0,
+          followups: 0,
+          lastContact: "N/A",
+          date: "N/A",
+        });
+      } finally {
+        setIsLoading(false);
+      }
+    };
+
+    fetchClientDetails();
   }, [clientId]);
 
   useEffect(() => {
-    nav.setOptions?.({ title: client.name });
-  }, [nav, client.name]);
+    if (client?.name) {
+      nav.setOptions?.({ title: client.name });
+    }
+  }, [nav, client?.name]);
+
+  // Ensure appointment sheet stays closed
+  useEffect(() => {
+    const timer = setTimeout(() => {
+      if (appointmentSheetRef.current) {
+        appointmentSheetRef.current.close();
+      }
+    }, 300);
+    
+    return () => clearTimeout(timer);
+  }, [client]);
+
+  // Show loading state
+  if (isLoading) {
+    return (
+      <View style={styles.loadingContainer}>
+        <TouchableOpacity
+          style={styles.backButtonLoading}
+          onPress={() => nav.goBack()}
+          activeOpacity={0.8}
+        >
+          <Ionicons name="arrow-back" size={20} color="#0f172a" />
+          <Text style={styles.backButtonText}>Back</Text>
+        </TouchableOpacity>
+        <ActivityIndicator size="large" color="#3b82f6" />
+        <Text style={styles.loadingText}>Loading client details...</Text>
+      </View>
+    );
+  }
+
+  // Show error state if no client data
+  if (!client) {
+    return (
+      <View style={styles.errorContainer}>
+        <Ionicons name="alert-circle-outline" size={48} color="#ef4444" />
+        <Text style={styles.errorTitle}>Client Not Found</Text>
+        <Text style={styles.errorText}>The requested client could not be found.</Text>
+        <TouchableOpacity
+          style={styles.errorButton}
+          onPress={() => nav.goBack()}
+        >
+          <Text style={styles.errorButtonText}>Go Back</Text>
+        </TouchableOpacity>
+      </View>
+    );
+  }
 
   const handleCall = () => {
     const phoneNumber = client.phone.replace(/\D/g, ""); // Remove non-digits
@@ -102,7 +193,7 @@ export default function ClientDetailsScreen() {
           return Linking.openURL(phoneUrl);
         } else {
           // Fallback: Copy to clipboard and show alert
-          Clipboard.setString(client.phone);
+          Clipboard.setStringAsync(client.phone);
           Alert.alert(
             "Phone Number Copied",
             `Phone number copied to clipboard:\n${client.phone}\n\nYou can now paste it in your phone dialer.`,
@@ -112,13 +203,12 @@ export default function ClientDetailsScreen() {
       })
       .catch((err) => {
         // Fallback: Copy to clipboard
-        Clipboard.setString(client.phone);
+        Clipboard.setStringAsync(client.phone);
         Alert.alert(
           "Phone Number Copied",
           `Unable to open dialer directly.\n\nPhone number copied to clipboard:\n${client.phone}\n\nYou can now paste it in your phone dialer.`,
           [{ text: "OK" }]
         );
-        console.error("Call error:", err);
       });
   };
 
@@ -144,7 +234,6 @@ export default function ClientDetailsScreen() {
           "Unable to open WhatsApp. Please try again.",
           [{ text: "OK" }]
         );
-        console.error("WhatsApp error:", err);
       });
   };
 
@@ -169,29 +258,74 @@ export default function ClientDetailsScreen() {
           "Unable to open email client. Please try again.",
           [{ text: "OK" }]
         );
-        console.error("Email error:", err);
       });
   };
 
-  const handleSaveFollowUp = () => {
+  const handleSaveFollowUp = async () => {
     if (!followUpMessage.trim()) {
       Alert.alert("Error", "Please enter a follow-up message");
       return;
     }
 
-    const newFollowUp = {
-      id: Date.now().toString(),
-      clientName: client.name,
-      clientId: client.id,
-      message: followUpMessage,
-      timestamp: new Date().toLocaleString(),
-      date: new Date(),
-    };
+    if (!client?.id) {
+      Alert.alert("Error", "Client information not available");
+      return;
+    }
 
-    setFollowUps([newFollowUp, ...followUps]);
-    setFollowUpMessage("");
-    setShowFollowUpModal(false);
-    Alert.alert("Success", "Follow-up saved successfully!");
+    try {
+      setIsSubmittingFollowup(true);
+
+      // Prepare follow-up data
+      const now = new Date();
+      const followupData = {
+        client_id: client.id,
+        followup_date: now.toISOString(), // Will be formatted in the service
+        remarks: followUpMessage.trim(),
+      };
+
+      // Note: appointment_id is omitted for general follow-ups
+      // It will only be included if we're adding a follow-up for a specific appointment
+
+      // Call the API
+      const result = await addFollowup(followupData);
+
+      if (result.success) {
+        // Create local follow-up object for immediate UI update
+        const newFollowUp = {
+          id: result.data?.id || Date.now().toString(),
+          clientName: client.name,
+          clientId: client.id,
+          message: followUpMessage,
+          timestamp: new Date().toLocaleString(),
+          date: new Date(),
+          status: result.data?.status_text || 'Pending',
+        };
+
+        // Update local state
+        setFollowUps([newFollowUp, ...followUps]);
+        setFollowUpMessage("");
+        setShowFollowUpModal(false);
+
+        // Show success toast instead of alert
+        showSuccessToast(
+          result.message || "Follow-up added successfully!",
+          "Follow-up Saved"
+        );
+      } else {
+        // Handle API error
+        showErrorToast(
+          result.message || "Failed to add follow-up. Please try again.",
+          "Follow-up Error"
+        );
+      }
+    } catch (error) {
+      showErrorToast(
+        "An unexpected error occurred. Please try again.",
+        "Follow-up Error"
+      );
+    } finally {
+      setIsSubmittingFollowup(false);
+    }
   };
 
   const getLeadColor = (lead) => {
@@ -214,6 +348,21 @@ export default function ClientDetailsScreen() {
       ]}
       showsVerticalScrollIndicator={false}
     >
+      {/* BACK BUTTON */}
+      <Animated.View
+        style={styles.backButtonContainer}
+        entering={FadeInDown.duration(400)}
+      >
+        <TouchableOpacity
+          style={styles.backButton}
+          onPress={() => nav.goBack()}
+          activeOpacity={0.8}
+        >
+          <Ionicons name="arrow-back" size={20} color="#0f172a" />
+          <Text style={styles.backButtonText}>Back</Text>
+        </TouchableOpacity>
+      </Animated.View>
+
       {/* HEADER CARD */}
       <Animated.View
         style={styles.headerCard}
@@ -401,7 +550,7 @@ export default function ClientDetailsScreen() {
       </Animated.View>
 
       {/* ACTIVITY STATS */}
-      <Animated.View
+      {/* <Animated.View
         style={styles.section}
         entering={FadeInUp.duration(600).delay(400)}
       >
@@ -422,7 +571,7 @@ export default function ClientDetailsScreen() {
             <Text style={styles.statLabel}>Follow-ups</Text>
           </View>
         </View>
-      </Animated.View>
+      </Animated.View> */}
 
       {/* REMARKS */}
       <Animated.View
@@ -441,6 +590,7 @@ export default function ClientDetailsScreen() {
         style={styles.actionButtons}
         entering={FadeInUp.duration(600).delay(600)}
       >
+        {/* COMMENTED OUT - Schedule Appointment Button
         <TouchableOpacity
           style={styles.primaryButton}
           activeOpacity={0.85}
@@ -449,6 +599,7 @@ export default function ClientDetailsScreen() {
           <Ionicons name="calendar-outline" size={20} color="#fff" />
           <Text style={styles.primaryButtonText}>Schedule Appointment</Text>
         </TouchableOpacity>
+        */}
 
         <TouchableOpacity
           style={styles.secondaryButton}
@@ -504,11 +655,21 @@ export default function ClientDetailsScreen() {
                 <Text style={styles.modalCancelText}>Cancel</Text>
               </TouchableOpacity>
               <TouchableOpacity
-                style={styles.modalSaveBtn}
+                style={[
+                  styles.modalSaveBtn,
+                  isSubmittingFollowup && styles.modalSaveBtnDisabled
+                ]}
                 onPress={handleSaveFollowUp}
+                disabled={isSubmittingFollowup}
               >
-                <Ionicons name="checkmark" size={18} color="#fff" />
-                <Text style={styles.modalSaveText}>Save</Text>
+                {isSubmittingFollowup ? (
+                  <ActivityIndicator size="small" color="#fff" />
+                ) : (
+                  <Ionicons name="checkmark" size={18} color="#fff" />
+                )}
+                <Text style={styles.modalSaveText}>
+                  {isSubmittingFollowup ? "Saving..." : "Save"}
+                </Text>
               </TouchableOpacity>
             </View>
           </Animated.View>
@@ -521,8 +682,12 @@ export default function ClientDetailsScreen() {
           mode: "New",
           name: client.name,
           phone: client.phone,
+          id: client.id,
+          location: client.location,
+          reference: client.reference,
+          case_type: client.caseType,
         }}
-        onSave={(data) => {
+        onSave={() => {
           appointmentSheetRef.current?.close();
         }}
       />
@@ -538,6 +703,34 @@ const styles = StyleSheet.create({
 
   content: {
     paddingHorizontal: 16,
+  },
+
+  backButtonContainer: {
+    marginBottom: 16,
+  },
+
+  backButton: {
+    flexDirection: "row",
+    alignItems: "center",
+    gap: 8,
+    paddingHorizontal: 16,
+    paddingVertical: 12,
+    backgroundColor: "#fff",
+    borderRadius: 12,
+    borderWidth: 1,
+    borderColor: "#e2e8f0",
+    alignSelf: "flex-start",
+    shadowColor: "#0f172a",
+    shadowOffset: { width: 0, height: 2 },
+    shadowOpacity: 0.05,
+    shadowRadius: 4,
+    elevation: 2,
+  },
+
+  backButtonText: {
+    fontSize: 14,
+    fontWeight: "700",
+    color: "#0f172a",
   },
 
   headerCard: {
@@ -941,9 +1134,85 @@ const styles = StyleSheet.create({
     elevation: 4,
   },
 
+  modalSaveBtnDisabled: {
+    backgroundColor: "#94a3b8",
+    shadowOpacity: 0.1,
+  },
+
   modalSaveText: {
     color: "#fff",
     fontWeight: "800",
+    fontSize: 14,
+  },
+
+  loadingContainer: {
+    flex: 1,
+    justifyContent: "center",
+    alignItems: "center",
+    backgroundColor: "#f8fafc",
+    paddingVertical: 60,
+  },
+
+  backButtonLoading: {
+    position: "absolute",
+    top: 60,
+    left: 16,
+    flexDirection: "row",
+    alignItems: "center",
+    gap: 8,
+    paddingHorizontal: 16,
+    paddingVertical: 12,
+    backgroundColor: "#fff",
+    borderRadius: 12,
+    borderWidth: 1,
+    borderColor: "#e2e8f0",
+    shadowColor: "#0f172a",
+    shadowOffset: { width: 0, height: 2 },
+    shadowOpacity: 0.05,
+    shadowRadius: 4,
+    elevation: 2,
+  },
+
+  loadingText: {
+    marginTop: 12,
+    fontSize: 14,
+    color: "#64748b",
+    fontWeight: "600",
+  },
+
+  errorContainer: {
+    flex: 1,
+    justifyContent: "center",
+    alignItems: "center",
+    backgroundColor: "#f8fafc",
+    paddingHorizontal: 40,
+  },
+
+  errorTitle: {
+    fontSize: 20,
+    fontWeight: "800",
+    color: "#0f172a",
+    marginTop: 16,
+    marginBottom: 8,
+  },
+
+  errorText: {
+    fontSize: 14,
+    color: "#64748b",
+    textAlign: "center",
+    marginBottom: 24,
+  },
+
+  errorButton: {
+    backgroundColor: "#3b82f6",
+    paddingHorizontal: 24,
+    paddingVertical: 12,
+    borderRadius: 12,
+  },
+
+  errorButtonText: {
+    color: "#fff",
+    fontWeight: "700",
     fontSize: 14,
   },
 });

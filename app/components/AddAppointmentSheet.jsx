@@ -6,75 +6,232 @@ import {
   TextInput,
   TouchableOpacity,
   View,
-  Alert,
   Modal,
+  ActivityIndicator,
 } from "react-native";
 import { Ionicons } from "@expo/vector-icons";
 import { LinearGradient } from "expo-linear-gradient";
 import { Calendar } from "react-native-calendars";
+import { addAppointment } from "../../services/api/appointmentService";
+import { showSuccessToast, showErrorToast } from "../../utils/toast";
 
 const AddAppointmentSheet = forwardRef(
   ({ prefill, onSave }, ref) => {
     const snapPoints = useMemo(() => ["90%"], []);
+    const [isSheetReady, setIsSheetReady] = useState(false);
 
     const [clientName, setClientName] = useState("");
     const [clientPhone, setClientPhone] = useState("");
+    const [clientId, setClientId] = useState("");
     const [appointmentDate, setAppointmentDate] = useState("");
     const [appointmentTime, setAppointmentTime] = useState("");
-    const [appointmentType, setAppointmentType] = useState("Online");
-    const [clientType, setClientType] = useState("New");
-    const [status, setStatus] = useState("Pending");
-    const [fee, setFee] = useState("");
-    const [notes, setNotes] = useState("");
+    const [appointmentType, setAppointmentType] = useState("online");
+    const [clientType, setClientType] = useState("new_client");
+    const [feeAmount, setFeeAmount] = useState("");
+    const [paymentMethod, setPaymentMethod] = useState("cash");
+    const [remarks, setRemarks] = useState("");
+    const [location, setLocation] = useState("");
+    const [reference, setReference] = useState("");
+    const [caseType, setCaseType] = useState("");
+    const [callType, setCallType] = useState("incoming");
     const [isCalendarOpen, setIsCalendarOpen] = useState(false);
+    const [isLoading, setIsLoading] = useState(false);
+    const [errors, setErrors] = useState({});
+
+    // Ensure the sheet stays closed initially and is properly initialized
+    useEffect(() => {
+      // Add a delay to ensure the component is fully mounted
+      const timer = setTimeout(() => {
+        if (ref?.current) {
+          ref.current.close();
+          setIsSheetReady(true);
+        }
+      }, 200);
+      
+      return () => clearTimeout(timer);
+    }, []);
+
+    // Also ensure it stays closed when prefill data changes
+    useEffect(() => {
+      if (prefill && ref?.current && isSheetReady) {
+        // Don't auto-open when prefill data is provided
+        ref.current.close();
+      }
+    }, [prefill, isSheetReady]);
 
     useEffect(() => {
       if (prefill) {
         setClientName(prefill.name || "");
         setClientPhone(prefill.phone || "");
+        setClientId(String(prefill.id || ""));
+        setLocation(prefill.location || "");
+        setReference(prefill.referance || prefill.reference || ""); // Note: API uses 'referance' not 'reference'
+        setCaseType(prefill.case_type || "");
       }
     }, [prefill]);
 
-    const handleSave = () => {
+    const validateForm = () => {
+      const newErrors = {};
+      
       if (!clientName.trim()) {
-        Alert.alert("Error", "Please enter client name");
-        return;
+        newErrors.clientName = "Client name is required";
       }
-      if (!appointmentDate.trim()) {
-        Alert.alert("Error", "Please select appointment date");
-        return;
+      
+      if (!clientPhone.trim()) {
+        newErrors.clientPhone = "Phone number is required";
+      } else if (!/^\d{10}$/.test(clientPhone.replace(/\D/g, ''))) {
+        newErrors.clientPhone = "Please enter a valid 10-digit phone number";
       }
+      
+      if (!clientId.trim()) {
+        newErrors.clientId = "Client ID is required";
+      }
+      
+      if (!appointmentDate) {
+        newErrors.appointmentDate = "Appointment date is required";
+      } else {
+        // Validate date format and range
+        const selectedDate = new Date(appointmentDate);
+        const today = new Date();
+        const maxDate = new Date();
+        maxDate.setFullYear(today.getFullYear() + 2); // Allow up to 2 years in future
+        
+        if (isNaN(selectedDate.getTime())) {
+          newErrors.appointmentDate = "Please select a valid date";
+        } else if (selectedDate < today.setHours(0, 0, 0, 0)) {
+          newErrors.appointmentDate = "Appointment date cannot be in the past";
+        } else if (selectedDate > maxDate) {
+          newErrors.appointmentDate = "Appointment date is too far in the future";
+        }
+      }
+      
       if (!appointmentTime.trim()) {
-        Alert.alert("Error", "Please enter appointment time");
+        newErrors.appointmentTime = "Appointment time is required";
+      } else if (!/^([0-1]?[0-9]|2[0-3]):[0-5][0-9]$/.test(appointmentTime)) {
+        newErrors.appointmentTime = "Please enter time in HH:MM format (e.g., 14:30)";
+      }
+      
+      if (feeAmount && isNaN(parseFloat(feeAmount))) {
+        newErrors.feeAmount = "Please enter a valid fee amount";
+      }
+      
+      if (!paymentMethod || paymentMethod.trim() === "") {
+        newErrors.paymentMethod = "Payment method is required";
+      }
+      
+      setErrors(newErrors);
+      return Object.keys(newErrors).length === 0;
+    };
+
+    const handleSave = async () => {
+      // Clear previous errors
+      setErrors({});
+      
+      // Validate form
+      if (!validateForm()) {
+        showErrorToast("Please fix the errors and try again");
         return;
       }
 
-      const appointmentData = {
-        clientName: clientName.trim(),
-        clientPhone: clientPhone.trim(),
-        date: appointmentDate,
-        time: appointmentTime,
-        type: appointmentType,
-        clientType: clientType,
-        status: status,
-        fee: fee || "0",
-        notes: notes.trim(),
-      };
+      setIsLoading(true);
 
-      onSave?.(appointmentData);
-      resetForm();
-      ref.current?.close();
-      Alert.alert("Success", "Appointment scheduled successfully!");
+      try {
+        // Format appointment date for MySQL compatibility (YYYY-MM-DD)
+        let formattedDate = appointmentDate;
+        
+        // Ensure date is in YYYY-MM-DD format (not ISO datetime)
+        if (appointmentDate) {
+          const dateObj = new Date(appointmentDate);
+          if (!isNaN(dateObj.getTime())) {
+            // Format as YYYY-MM-DD for MySQL date column
+            formattedDate = dateObj.toISOString().split('T')[0];
+          }
+        }
+        
+        const appointmentData = {
+          appointment_type: appointmentType,
+          client_type: clientType,
+          appointment_date: formattedDate, // MySQL date format: YYYY-MM-DD
+          appointment_time: appointmentTime.trim(), // Ensure no trailing spaces
+          fee_amount: feeAmount ? parseFloat(feeAmount) : 0, // Send as number
+          payment_method: paymentMethod,
+          remarks: remarks.trim() || "Appointment booked from mobile app", // Default message if empty
+          client_id: clientId.trim(),
+          client_name: clientName.trim(),
+          client_phone: clientPhone.trim(),
+          call_type: callType,
+          location: location.trim() || "",
+          referance: reference.trim() || "",
+          case_type: caseType.trim() || "",
+        };
+
+        const result = await addAppointment(appointmentData);
+
+        if (result.success) {
+          showSuccessToast(result.message || "Appointment scheduled successfully!");
+          
+          // Call parent callback if provided
+          onSave?.(result.data);
+          
+          // Reset form and close sheet
+          resetForm();
+          ref.current?.close();
+        } else {
+          // Handle API errors with improved error handling
+          
+          // Set field-specific validation errors if provided
+          if (result.validationErrors && Object.keys(result.validationErrors).length > 0) {
+            setErrors(result.validationErrors);
+          }
+          
+          // Show appropriate error message
+          showErrorToast(result.message || "Failed to schedule appointment");
+          
+          // Handle specific error cases for better UX
+          if (result.errorCode === 401) {
+            // Session expired - could redirect to login
+            setTimeout(() => {
+              showErrorToast("Please login again to continue");
+            }, 2000);
+          } else if (result.errorCode === 409) {
+            // Conflict errors - highlight relevant fields
+            if (result.message.toLowerCase().includes('phone')) {
+              setErrors(prev => ({ ...prev, clientPhone: "Phone number already exists" }));
+            } else if (result.message.toLowerCase().includes('client id')) {
+              setErrors(prev => ({ ...prev, clientId: "Client ID already exists" }));
+            }
+          } else if (result.errorCode === 422) {
+            // Validation errors - fields should already be highlighted via validationErrors
+            if (Object.keys(result.validationErrors || {}).length === 0) {
+              // If no specific field errors, show general validation message
+              showErrorToast("Please check your input and try again");
+            }
+          }
+        }
+      } catch (error) {
+        // Handle unexpected errors (network issues, etc.)
+        showErrorToast("Network error. Please check your connection and try again.");
+      } finally {
+        setIsLoading(false);
+      }
     };
 
     const resetForm = () => {
+      setClientName("");
+      setClientPhone("");
+      setClientId("");
       setAppointmentDate("");
       setAppointmentTime("");
-      setAppointmentType("Online");
-      setClientType("New");
-      setStatus("Pending");
-      setFee("");
-      setNotes("");
+      setAppointmentType("online");
+      setClientType("new_client");
+      setFeeAmount("");
+      setPaymentMethod("cash"); // Ensure it's always set to a valid value
+      setRemarks("");
+      setLocation("");
+      setReference("");
+      setCaseType("");
+      setCallType("incoming");
+      setErrors({});
     };
 
     return (
@@ -82,9 +239,21 @@ const AddAppointmentSheet = forwardRef(
         ref={ref}
         index={-1}
         snapPoints={snapPoints}
-        enablePanDownToClose
+        enablePanDownToClose={true}
         keyboardBehavior="interactive"
         backgroundStyle={styles.sheetBackground}
+        handleIndicatorStyle={styles.handleIndicator}
+        animateOnMount={false}
+        activeOffsetY={[-1, 1]}
+        failOffsetX={[-5, 5]}
+        onChange={(index) => {
+          // Prevent any automatic opening
+          if (index > -1 && !isSheetReady) {
+            setTimeout(() => {
+              ref?.current?.close();
+            }, 50);
+          }
+        }}
       >
         <BottomSheetScrollView
           contentContainerStyle={styles.content}
@@ -101,32 +270,82 @@ const AddAppointmentSheet = forwardRef(
             <Text style={styles.sectionTitle}>Client Information</Text>
 
             <View style={styles.inputGroup}>
-              <Text style={styles.label}>Client Name</Text>
-              <View style={styles.inputWrapper}>
+              <Text style={styles.label}>Client Name *</Text>
+              <View style={[
+                styles.inputWrapper,
+                errors.clientName && styles.inputError
+              ]}>
                 <Ionicons name="person-outline" size={18} color="#3b82f6" />
                 <TextInput
                   style={styles.input}
                   placeholder="Enter client name"
                   placeholderTextColor="#94a3b8"
                   value={clientName}
-                  onChangeText={setClientName}
+                  onChangeText={(text) => {
+                    setClientName(text);
+                    if (errors.clientName) {
+                      setErrors({ ...errors, clientName: null });
+                    }
+                  }}
+                  editable={!isLoading}
                 />
               </View>
+              {errors.clientName && (
+                <Text style={styles.errorText}>{errors.clientName}</Text>
+              )}
             </View>
 
             <View style={styles.inputGroup}>
-              <Text style={styles.label}>Phone Number</Text>
-              <View style={styles.inputWrapper}>
+              <Text style={styles.label}>Phone Number *</Text>
+              <View style={[
+                styles.inputWrapper,
+                errors.clientPhone && styles.inputError
+              ]}>
                 <Ionicons name="call-outline" size={18} color="#3b82f6" />
                 <TextInput
                   style={styles.input}
                   placeholder="Enter phone number"
                   placeholderTextColor="#94a3b8"
                   value={clientPhone}
-                  onChangeText={setClientPhone}
+                  onChangeText={(text) => {
+                    setClientPhone(text);
+                    if (errors.clientPhone) {
+                      setErrors({ ...errors, clientPhone: null });
+                    }
+                  }}
                   keyboardType="phone-pad"
+                  editable={!isLoading}
                 />
               </View>
+              {errors.clientPhone && (
+                <Text style={styles.errorText}>{errors.clientPhone}</Text>
+              )}
+            </View>
+
+            <View style={styles.inputGroup}>
+              <Text style={styles.label}>Client ID *</Text>
+              <View style={[
+                styles.inputWrapper,
+                errors.clientId && styles.inputError
+              ]}>
+                <Ionicons name="card-outline" size={18} color="#3b82f6" />
+                <TextInput
+                  style={styles.input}
+                  placeholder="Enter client ID"
+                  placeholderTextColor="#94a3b8"
+                  value={clientId}
+                  onChangeText={(text) => {
+                    setClientId(text);
+                    if (errors.clientId) {
+                      setErrors({ ...errors, clientId: null });
+                    }
+                  }}
+                  editable={!isLoading}
+                />
+              </View>
+              {errors.clientId && (
+                <Text style={styles.errorText}>{errors.clientId}</Text>
+              )}
             </View>
           </View>
 
@@ -136,10 +355,14 @@ const AddAppointmentSheet = forwardRef(
 
             {/* DATE PICKER */}
             <View style={styles.inputGroup}>
-              <Text style={styles.label}>Date</Text>
+              <Text style={styles.label}>Date *</Text>
               <TouchableOpacity
-                style={styles.datePickerButton}
+                style={[
+                  styles.datePickerButton,
+                  errors.appointmentDate && styles.inputError
+                ]}
                 onPress={() => setIsCalendarOpen(true)}
+                disabled={isLoading}
               >
                 <Ionicons name="calendar-outline" size={18} color="#3b82f6" />
                 <View style={styles.datePickerContent}>
@@ -150,43 +373,64 @@ const AddAppointmentSheet = forwardRef(
                 </View>
                 <Ionicons name="chevron-forward" size={18} color="#94a3b8" />
               </TouchableOpacity>
+              {errors.appointmentDate && (
+                <Text style={styles.errorText}>{errors.appointmentDate}</Text>
+              )}
             </View>
 
             <View style={styles.inputGroup}>
-              <Text style={styles.label}>Time (HH:MM)</Text>
-              <View style={styles.inputWrapper}>
+              <Text style={styles.label}>Time (HH:MM) *</Text>
+              <View style={[
+                styles.inputWrapper,
+                errors.appointmentTime && styles.inputError
+              ]}>
                 <Ionicons name="time-outline" size={18} color="#3b82f6" />
                 <TextInput
                   style={styles.input}
-                  placeholder="10:30"
+                  placeholder="14:30"
                   placeholderTextColor="#94a3b8"
                   value={appointmentTime}
-                  onChangeText={setAppointmentTime}
+                  onChangeText={(text) => {
+                    setAppointmentTime(text);
+                    if (errors.appointmentTime) {
+                      setErrors({ ...errors, appointmentTime: null });
+                    }
+                  }}
+                  editable={!isLoading}
                 />
               </View>
+              {errors.appointmentTime && (
+                <Text style={styles.errorText}>{errors.appointmentTime}</Text>
+              )}
             </View>
 
-            {/* TYPE, CLIENT TYPE & STATUS ROW */}
+            {/* TYPE, CLIENT TYPE & PAYMENT METHOD ROW */}
             <View style={styles.row}>
               <View style={[styles.inputGroup, { flex: 1 }]}>
                 <Text style={styles.label}>Type</Text>
                 <View style={styles.buttonGroup}>
-                  {["Online", "Offline"].map((type) => (
+                  {[
+                    { key: "online", label: "Online" },
+                    { key: "offline", label: "Offline" },
+                    // { key: "consultation", label: "Consultation" },
+                    // { key: "follow_up", label: "Follow Up" }
+                  ].map((type) => (
                     <TouchableOpacity
-                      key={type}
+                      key={type.key}
                       style={[
                         styles.typeButton,
-                        appointmentType === type && styles.typeButtonActive,
+                        appointmentType === type.key && styles.typeButtonActive,
                       ]}
-                      onPress={() => setAppointmentType(type)}
+                      onPress={() => setAppointmentType(type.key)}
+                      disabled={isLoading}
                     >
                       <Text
                         style={[
                           styles.typeButtonText,
-                          appointmentType === type && styles.typeButtonTextActive,
+                          appointmentType === type.key && styles.typeButtonTextActive,
                         ]}
                       >
-                        {type}
+                        {type.label}
                       </Text>
                     </TouchableOpacity>
                   ))}
@@ -196,22 +440,26 @@ const AddAppointmentSheet = forwardRef(
               <View style={[styles.inputGroup, { flex: 1, marginLeft: 12 }]}>
                 <Text style={styles.label}>Client</Text>
                 <View style={styles.buttonGroup}>
-                  {["New", "Old"].map((type) => (
+                  {[
+                    { key: "new_client", label: "New" },
+                    { key: "existing_client", label: "Existing" }
+                  ].map((type) => (
                     <TouchableOpacity
-                      key={type}
+                      key={type.key}
                       style={[
                         styles.typeButton,
-                        clientType === type && styles.typeButtonActive,
+                        clientType === type.key && styles.typeButtonActive,
                       ]}
-                      onPress={() => setClientType(type)}
+                      onPress={() => setClientType(type.key)}
+                      disabled={isLoading}
                     >
                       <Text
                         style={[
                           styles.typeButtonText,
-                          clientType === type && styles.typeButtonTextActive,
+                          clientType === type.key && styles.typeButtonTextActive,
                         ]}
                       >
-                        {type}
+                        {type.label}
                       </Text>
                     </TouchableOpacity>
                   ))}
@@ -219,29 +467,76 @@ const AddAppointmentSheet = forwardRef(
               </View>
             </View>
 
-            {/* STATUS */}
-            <View style={styles.inputGroup}>
-              <Text style={styles.label}>Status</Text>
-              <View style={styles.buttonGroup}>
-                {["Pending", "Confirmed"].map((s) => (
-                  <TouchableOpacity
-                    key={s}
-                    style={[
-                      styles.typeButton,
-                      status === s && styles.typeButtonActive,
-                    ]}
-                    onPress={() => setStatus(s)}
-                  >
-                    <Text
+            {/* PAYMENT METHOD & CALL TYPE */}
+            <View style={styles.row}>
+              <View style={[styles.inputGroup, { flex: 1 }]}>
+                <Text style={styles.label}>Payment *</Text>
+                <View style={[
+                  styles.buttonGroup,
+                  errors.paymentMethod && styles.buttonGroupError
+                ]}>
+                  {[
+                    { key: "cash", label: "Cash" },
+                    { key: "online", label: "Online" }
+                  ].map((method) => (
+                    <TouchableOpacity
+                      key={method.key}
                       style={[
-                        styles.typeButtonText,
-                        status === s && styles.typeButtonTextActive,
+                        styles.typeButton,
+                        paymentMethod === method.key && styles.typeButtonActive,
+                        errors.paymentMethod && styles.typeButtonError,
                       ]}
+                      onPress={() => {
+                        setPaymentMethod(method.key);
+                        if (errors.paymentMethod) {
+                          setErrors({ ...errors, paymentMethod: null });
+                        }
+                      }}
+                      disabled={isLoading}
                     >
-                      {s}
-                    </Text>
-                  </TouchableOpacity>
-                ))}
+                      <Text
+                        style={[
+                          styles.typeButtonText,
+                          paymentMethod === method.key && styles.typeButtonTextActive,
+                        ]}
+                      >
+                        {method.label}
+                      </Text>
+                    </TouchableOpacity>
+                  ))}
+                </View>
+                {errors.paymentMethod && (
+                  <Text style={styles.errorText}>{errors.paymentMethod}</Text>
+                )}
+              </View>
+
+              <View style={[styles.inputGroup, { flex: 1, marginLeft: 12 }]}>
+                <Text style={styles.label}>Call Type</Text>
+                <View style={styles.buttonGroup}>
+                  {[
+                    { key: "incoming", label: "Incoming" },
+                    { key: "outgoing", label: "Outgoing" }
+                  ].map((type) => (
+                    <TouchableOpacity
+                      key={type.key}
+                      style={[
+                        styles.typeButton,
+                        callType === type.key && styles.typeButtonActive,
+                      ]}
+                      onPress={() => setCallType(type.key)}
+                      disabled={isLoading}
+                    >
+                      <Text
+                        style={[
+                          styles.typeButtonText,
+                          callType === type.key && styles.typeButtonTextActive,
+                        ]}
+                      >
+                        {type.label}
+                      </Text>
+                    </TouchableOpacity>
+                  ))}
+                </View>
               </View>
             </View>
           </View>
@@ -251,31 +546,89 @@ const AddAppointmentSheet = forwardRef(
             <Text style={styles.sectionTitle}>Additional Information</Text>
 
             <View style={styles.inputGroup}>
-              <Text style={styles.label}>Fee (Optional)</Text>
-              <View style={styles.inputWrapper}>
+              <Text style={styles.label}>Fee Amount</Text>
+              <View style={[
+                styles.inputWrapper,
+                errors.feeAmount && styles.inputError
+              ]}>
                 <Ionicons name="cash-outline" size={18} color="#3b82f6" />
                 <TextInput
                   style={styles.input}
                   placeholder="Enter fee amount"
                   placeholderTextColor="#94a3b8"
-                  value={fee}
-                  onChangeText={setFee}
+                  value={feeAmount}
+                  onChangeText={(text) => {
+                    setFeeAmount(text);
+                    if (errors.feeAmount) {
+                      setErrors({ ...errors, feeAmount: null });
+                    }
+                  }}
                   keyboardType="decimal-pad"
+                  editable={!isLoading}
+                />
+              </View>
+              {errors.feeAmount && (
+                <Text style={styles.errorText}>{errors.feeAmount}</Text>
+              )}
+            </View>
+
+            <View style={styles.inputGroup}>
+              <Text style={styles.label}>Location</Text>
+              <View style={styles.inputWrapper}>
+                <Ionicons name="location-outline" size={18} color="#3b82f6" />
+                <TextInput
+                  style={styles.input}
+                  placeholder="Enter location"
+                  placeholderTextColor="#94a3b8"
+                  value={location}
+                  onChangeText={setLocation}
+                  editable={!isLoading}
                 />
               </View>
             </View>
 
             <View style={styles.inputGroup}>
-              <Text style={styles.label}>Notes (Optional)</Text>
+              <Text style={styles.label}>Reference</Text>
+              <View style={styles.inputWrapper}>
+                <Ionicons name="person-add-outline" size={18} color="#3b82f6" />
+                <TextInput
+                  style={styles.input}
+                  placeholder="Enter reference"
+                  placeholderTextColor="#94a3b8"
+                  value={reference}
+                  onChangeText={setReference}
+                  editable={!isLoading}
+                />
+              </View>
+            </View>
+
+            <View style={styles.inputGroup}>
+              <Text style={styles.label}>Case Type</Text>
+              <View style={styles.inputWrapper}>
+                <Ionicons name="briefcase-outline" size={18} color="#3b82f6" />
+                <TextInput
+                  style={styles.input}
+                  placeholder="Enter case type"
+                  placeholderTextColor="#94a3b8"
+                  value={caseType}
+                  onChangeText={setCaseType}
+                  editable={!isLoading}
+                />
+              </View>
+            </View>
+
+            <View style={styles.inputGroup}>
+              <Text style={styles.label}>Remarks</Text>
               <TextInput
                 style={[styles.input, styles.notesInput]}
-                placeholder="Add any notes or remarks..."
+                placeholder="Add any remarks or notes..."
                 placeholderTextColor="#94a3b8"
-                value={notes}
-                onChangeText={setNotes}
+                value={remarks}
+                onChangeText={setRemarks}
                 multiline
                 numberOfLines={4}
                 textAlignVertical="top"
+                editable={!isLoading}
               />
             </View>
           </View>
@@ -283,8 +636,9 @@ const AddAppointmentSheet = forwardRef(
           {/* ACTION BUTTONS */}
           <View style={styles.buttonContainer}>
             <TouchableOpacity
-              style={styles.cancelButton}
+              style={[styles.cancelButton, isLoading && styles.buttonDisabled]}
               onPress={() => ref.current?.close()}
+              disabled={isLoading}
             >
               <Text style={styles.cancelButtonText}>Cancel</Text>
             </TouchableOpacity>
@@ -293,14 +647,21 @@ const AddAppointmentSheet = forwardRef(
               colors={["#3b82f6", "#2563eb"]}
               start={{ x: 0, y: 0 }}
               end={{ x: 1, y: 1 }}
-              style={styles.saveButtonGradient}
+              style={[styles.saveButtonGradient, isLoading && styles.buttonDisabled]}
             >
               <TouchableOpacity
                 style={styles.saveButton}
                 onPress={handleSave}
+                disabled={isLoading}
               >
-                <Ionicons name="checkmark" size={20} color="#fff" />
-                <Text style={styles.saveButtonText}>Save Appointment</Text>
+                {isLoading ? (
+                  <ActivityIndicator size="small" color="#fff" />
+                ) : (
+                  <>
+                    <Ionicons name="checkmark" size={20} color="#fff" />
+                    <Text style={styles.saveButtonText}>Save Appointment</Text>
+                  </>
+                )}
               </TouchableOpacity>
             </LinearGradient>
           </View>
@@ -326,6 +687,7 @@ const AddAppointmentSheet = forwardRef(
 
                 <Calendar
                   current={appointmentDate || new Date().toISOString().split("T")[0]}
+                  minDate={new Date().toISOString().split("T")[0]}
                   onDayPress={(day) => {
                     setAppointmentDate(day.dateString);
                     setIsCalendarOpen(false);
@@ -361,6 +723,11 @@ export default AddAppointmentSheet;
 const styles = StyleSheet.create({
   sheetBackground: {
     backgroundColor: "#fff",
+  },
+
+  handleIndicator: {
+    backgroundColor: "#e2e8f0",
+    width: 40,
   },
 
   content: {
@@ -421,6 +788,19 @@ const styles = StyleSheet.create({
     gap: 10,
   },
 
+  inputError: {
+    borderColor: "#ef4444",
+    borderWidth: 2,
+  },
+
+  errorText: {
+    color: "#ef4444",
+    fontSize: 12,
+    fontWeight: "600",
+    marginTop: 4,
+    marginLeft: 4,
+  },
+
   input: {
     flex: 1,
     paddingVertical: 12,
@@ -446,12 +826,21 @@ const styles = StyleSheet.create({
 
   buttonGroup: {
     flexDirection: "row",
+    flexWrap: "wrap",
     gap: 8,
   },
 
+  buttonGroupError: {
+    borderWidth: 1,
+    borderColor: "#ef4444",
+    borderRadius: 8,
+    padding: 4,
+  },
+
   typeButton: {
-    flex: 1,
+    minWidth: 80,
     paddingVertical: 10,
+    paddingHorizontal: 12,
     borderRadius: 10,
     backgroundColor: "#f1f5f9",
     borderWidth: 1,
@@ -462,6 +851,10 @@ const styles = StyleSheet.create({
   typeButtonActive: {
     backgroundColor: "#3b82f6",
     borderColor: "#3b82f6",
+  },
+
+  typeButtonError: {
+    borderColor: "#ef4444",
   },
 
   typeButtonText: {
@@ -514,6 +907,10 @@ const styles = StyleSheet.create({
     fontSize: 14,
     fontWeight: "800",
     color: "#fff",
+  },
+
+  buttonDisabled: {
+    opacity: 0.6,
   },
 
   datePickerButton: {

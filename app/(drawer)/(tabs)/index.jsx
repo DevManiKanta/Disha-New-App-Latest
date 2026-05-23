@@ -1,78 +1,127 @@
 import { Ionicons } from "@expo/vector-icons";
-import { useMemo, useState } from "react";
+import { useMemo, useState, useEffect, useCallback } from "react";
 import {
   ScrollView,
   StyleSheet,
   Text,
   TouchableOpacity,
   View,
-  Dimensions,
+  RefreshControl,
+  ActivityIndicator,
 } from "react-native";
 import { useSafeAreaInsets } from "react-native-safe-area-context";
-import { router } from "expo-router";
+import { useFocusEffect, router } from "expo-router";
 import { LinearGradient } from "expo-linear-gradient";
 import Animated, {
   FadeInDown,
   FadeInUp,
-  Layout,
 } from "react-native-reanimated";
-
-const { width } = Dimensions.get("window");
-
-const RECENT_ACTIVITIES = [
-  {
-    id: "1",
-    name: "John Doe",
-    action: "Appointment booked",
-    time: "10:30 AM",
-    type: "Online",
-    icon: "calendar-outline",
-    color: "#3b82f6",
-  },
-  {
-    id: "2",
-    name: "Sarah Smith",
-    action: "Follow-up completed",
-    time: "2:15 PM",
-    type: "Call",
-    icon: "call-outline",
-    color: "#10b981",
-  },
-  {
-    id: "3",
-    name: "Michael Brown",
-    action: "New client added",
-    time: "Yesterday",
-    type: "Client",
-    icon: "person-add-outline",
-    color: "#f59e0b",
-  },
-];
+import { getDashboardAnalytics } from "../../../services/api/dashboardService";
+import { showErrorToast } from "../../../utils/toast";
 
 export default function HomeScreen() {
   const insets = useSafeAreaInsets();
   const [activeTab, setActiveTab] = useState("overview");
+  const [dashboardData, setDashboardData] = useState(null);
+  const [isLoading, setIsLoading] = useState(true);
+  const [isRefreshing, setIsRefreshing] = useState(false);
+
+  const fetchDashboardData = async (showLoader = true) => {
+    if (showLoader) {
+      setIsLoading(true);
+    }
+
+    try {
+      const result = await getDashboardAnalytics();
+
+      if (result.success && result.data?.data) {
+        setDashboardData(result.data.data);
+      } else {
+        showErrorToast(result.message || "Failed to load dashboard data");
+      }
+    } catch (error) {
+      showErrorToast("An unexpected error occurred");
+    } finally {
+      setIsLoading(false);
+      setIsRefreshing(false);
+    }
+  };
+
+  // Fetch data on mount
+  useEffect(() => {
+    fetchDashboardData();
+  }, []);
+
+  // Refresh data when screen comes into focus
+  useFocusEffect(
+    useCallback(() => {
+      fetchDashboardData(false);
+    }, [])
+  );
+
+  const onRefresh = () => {
+    setIsRefreshing(true);
+    fetchDashboardData(false);
+  };
 
   const stats = useMemo(() => {
-    const totalClients = 24;
-    const totalCalls = 57;
-    const appointmentsToday = 3;
-    const followupsToday = 5;
-    const conversionRate = 68;
+    if (!dashboardData) {
+      return {
+        totalClients: 0,
+        totalCalls: 0,
+        appointmentsToday: 0,
+        followupsToday: 0,
+        conversionRate: 0,
+        clientSatisfaction: 0,
+        callsThisMonth: 0,
+        pendingFollowups: 0,
+      };
+    }
+
     return {
-      totalClients,
-      totalCalls,
-      appointmentsToday,
-      followupsToday,
-      conversionRate,
+      totalClients: dashboardData.clients || 0,
+      totalCalls: dashboardData.total_calls || 0,
+      appointmentsToday: dashboardData.appointments_today || 0,
+      followupsToday: dashboardData.followups || 0,
+      conversionRate: dashboardData.conversion_rate || 0,
+      clientSatisfaction: dashboardData.client_satisfaction || 0,
+      callsThisMonth: dashboardData.calls_this_month || 0,
+      pendingFollowups: dashboardData.pending_followups || 0,
     };
-  }, []);
+  }, [dashboardData]);
+
+  const recentActivities = useMemo(() => {
+    if (!dashboardData?.recent_activities) {
+      return [];
+    }
+    return dashboardData.recent_activities;
+  }, [dashboardData]);
+
+  const getActivityIcon = (type) => {
+    if (type?.toLowerCase().includes("online")) return "videocam-outline";
+    if (type?.toLowerCase().includes("offline")) return "location-outline";
+    return "calendar-outline";
+  };
+
+  const getActivityColor = (type) => {
+    if (type?.toLowerCase().includes("online")) return "#3b82f6";
+    if (type?.toLowerCase().includes("offline")) return "#8b5cf6";
+    return "#10b981";
+  };
+
+  if (isLoading) {
+    return (
+      <View style={[styles.container, styles.loadingContainer]}>
+        <ActivityIndicator size="large" color="#3b82f6" />
+        <Text style={styles.loadingText}>Loading dashboard...</Text>
+      </View>
+    );
+  }
 
   const renderKPICard = (icon, label, value, hint, bgColor, textColor) => (
     <Animated.View
       style={styles.kpiCard}
       entering={FadeInUp.duration(600).delay(100)}
-      layout={Layout.springify()}
     >
       <LinearGradient
         colors={bgColor}
@@ -110,6 +159,14 @@ export default function HomeScreen() {
       ]}
       showsVerticalScrollIndicator={false}
       scrollEventThrottle={16}
+      refreshControl={
+        <RefreshControl
+          refreshing={isRefreshing}
+          onRefresh={onRefresh}
+          colors={["#3b82f6"]}
+          tintColor="#3b82f6"
+        />
+      }
     >
       {/* Header Section */}
       <Animated.View
@@ -133,7 +190,7 @@ export default function HomeScreen() {
 
       {/* Tab Navigation */}
       <View style={styles.tabContainer}>
-        {["overview", "analytics"].map((tab) => (
+        {["overview", ""].map((tab) => (
           <TouchableOpacity
             key={tab}
             style={[
@@ -222,12 +279,12 @@ export default function HomeScreen() {
       </Animated.View>
 
       {/* Quick Actions */}
-      <View style={styles.sectionHeader}>
+      {/* <View style={styles.sectionHeader}>
         <Text style={styles.sectionTitle}>Quick Actions</Text>
         <Text style={styles.sectionSub}>Manage your workflow</Text>
-      </View>
+      </View> */}
 
-      <View style={styles.actionsGrid}>
+      {/* <View style={styles.actionsGrid}>
         <TouchableOpacity
           activeOpacity={0.85}
           style={styles.actionCard}
@@ -261,55 +318,69 @@ export default function HomeScreen() {
             <Text style={styles.actionSub}>Schedule</Text>
           </LinearGradient>
         </TouchableOpacity>
-      </View>
+      </View> */}
 
       {/* Recent Activity */}
       <View style={styles.sectionHeader}>
         <Text style={styles.sectionTitle}>Recent Activity</Text>
-        <TouchableOpacity>
+        <TouchableOpacity onPress={() => router.push("/(drawer)/appointments")}>
           <Text style={styles.viewAll}>View All</Text>
         </TouchableOpacity>
       </View>
 
-      <View style={styles.activityList}>
-        {RECENT_ACTIVITIES.map((activity, index) => (
-          <Animated.View
-            key={activity.id}
-            style={styles.activityItem}
-            entering={FadeInUp.duration(500).delay(index * 100)}
-          >
-            <View
-              style={[
-                styles.activityIcon,
-                { backgroundColor: `${activity.color}20` },
-              ]}
-            >
-              <Ionicons
-                name={activity.icon}
-                size={18}
-                color={activity.color}
-              />
-            </View>
-            <View style={styles.activityContent}>
-              <Text style={styles.activityName}>{activity.name}</Text>
-              <Text style={styles.activityAction}>{activity.action}</Text>
-            </View>
-            <View style={styles.activityMeta}>
-              <Text style={styles.activityTime}>{activity.time}</Text>
-              <View
-                style={[
-                  styles.activityBadge,
-                  { backgroundColor: `${activity.color}15` },
-                ]}
+      {recentActivities.length > 0 ? (
+        <View style={styles.activityList}>
+          {recentActivities.map((activity, index) => {
+            const activityColor = getActivityColor(activity.appointment_type);
+            const activityIcon = getActivityIcon(activity.appointment_type);
+            
+            return (
+              <Animated.View
+                key={activity.id}
+                style={styles.activityItem}
+                entering={FadeInUp.duration(500).delay(index * 100)}
               >
-                <Text style={[styles.activityBadgeText, { color: activity.color }]}>
-                  {activity.type}
-                </Text>
-              </View>
-            </View>
-          </Animated.View>
-        ))}
-      </View>
+                <View
+                  style={[
+                    styles.activityIcon,
+                    { backgroundColor: `${activityColor}20` },
+                  ]}
+                >
+                  <Ionicons
+                    name={activityIcon}
+                    size={18}
+                    color={activityColor}
+                  />
+                </View>
+                <View style={styles.activityContent}>
+                  <Text style={styles.activityName}>{activity.title}</Text>
+                  <Text style={styles.activityAction}>{activity.subtitle}</Text>
+                </View>
+                <View style={styles.activityMeta}>
+                  <Text style={styles.activityTime}>{activity.time}</Text>
+                  {activity.appointment_type && (
+                    <View
+                      style={[
+                        styles.activityBadge,
+                        { backgroundColor: `${activityColor}15` },
+                      ]}
+                    >
+                      <Text style={[styles.activityBadgeText, { color: activityColor }]}>
+                        {activity.appointment_type}
+                      </Text>
+                    </View>
+                  )}
+                </View>
+              </Animated.View>
+            );
+          })}
+        </View>
+      ) : (
+        <View style={styles.emptyActivity}>
+          <Ionicons name="calendar-outline" size={48} color="#cbd5e1" />
+          <Text style={styles.emptyActivityText}>No recent activities</Text>
+        </View>
+      )}
 
       {/* Footer Stats */}
       <Animated.View
@@ -317,17 +388,17 @@ export default function HomeScreen() {
         entering={FadeInUp.duration(600).delay(300)}
       >
         <View style={styles.statItem}>
-          <Text style={styles.statValue}>92%</Text>
+          <Text style={styles.statValue}>{stats.clientSatisfaction}%</Text>
           <Text style={styles.statLabel}>Client Satisfaction</Text>
         </View>
         <View style={styles.statDivider} />
         <View style={styles.statItem}>
-          <Text style={styles.statValue}>156</Text>
+          <Text style={styles.statValue}>{stats.callsThisMonth}</Text>
           <Text style={styles.statLabel}>Calls This Month</Text>
         </View>
         <View style={styles.statDivider} />
         <View style={styles.statItem}>
-          <Text style={styles.statValue}>18</Text>
+          <Text style={styles.statValue}>{stats.pendingFollowups}</Text>
           <Text style={styles.statLabel}>Pending Follow-ups</Text>
         </View>
       </Animated.View>
@@ -339,6 +410,18 @@ const styles = StyleSheet.create({
   container: {
     flex: 1,
     backgroundColor: "#f8fafc",
+  },
+
+  loadingContainer: {
+    justifyContent: "center",
+    alignItems: "center",
+  },
+
+  loadingText: {
+    marginTop: 12,
+    fontSize: 14,
+    color: "#64748b",
+    fontWeight: "600",
   },
 
   content: {
@@ -675,6 +758,23 @@ const styles = StyleSheet.create({
   activityBadgeText: {
     fontSize: 10,
     fontWeight: "700",
+  },
+
+  emptyActivity: {
+    alignItems: "center",
+    justifyContent: "center",
+    paddingVertical: 40,
+    backgroundColor: "#fff",
+    borderRadius: 16,
+    borderWidth: 1,
+    borderColor: "#e2e8f0",
+  },
+
+  emptyActivityText: {
+    marginTop: 12,
+    fontSize: 14,
+    color: "#94a3b8",
+    fontWeight: "600",
   },
 
   footerStats: {

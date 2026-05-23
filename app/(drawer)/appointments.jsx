@@ -1,199 +1,156 @@
 import { Ionicons } from "@expo/vector-icons";
-import { useState } from "react";
+import { useState, useEffect, useCallback, useRef } from "react";
 import {
-  ScrollView,
   StyleSheet,
   Text,
   TouchableOpacity,
   View,
   FlatList,
+  ActivityIndicator,
+  RefreshControl,
   Modal,
 } from "react-native";
 import { useSafeAreaInsets } from "react-native-safe-area-context";
 import { LinearGradient } from "expo-linear-gradient";
 import Animated, { FadeInUp } from "react-native-reanimated";
+import { useFocusEffect, useLocalSearchParams } from "expo-router";
 import { Calendar } from "react-native-calendars";
+import { getAppointmentsList } from "../../services/api/appointmentService";
+import { showErrorToast } from "../../utils/toast";
+import AddAppointmentSheet from "../components/AddAppointmentSheet";
 
 export default function AppointmentsScreen() {
   const insets = useSafeAreaInsets();
-  const [appointments, setAppointments] = useState([
-    {
-      id: "1",
-      clientName: "John Doe",
-      clientPhone: "9876543210",
-      date: "2026-05-20",
-      time: "10:30",
-      type: "Online",
-      clientType: "New",
-      status: "Confirmed",
-      fee: "500",
-      notes: "Discuss corporate restructuring",
-    },
-    {
-      id: "2",
-      clientName: "Sarah Smith",
-      clientPhone: "9999999999",
-      date: "2026-05-21",
-      time: "14:00",
-      type: "Offline",
-      clientType: "Old",
-      status: "Pending",
-      fee: "750",
-      notes: "Family law consultation",
-    },
-    {
-      id: "3",
-      clientName: "Michael Brown",
-      clientPhone: "8888888888",
-      date: "2026-05-22",
-      time: "11:15",
-      type: "Online",
-      clientType: "New",
-      status: "Confirmed",
-      fee: "600",
-      notes: "Real estate dispute",
-    },
-    {
-      id: "4",
-      clientName: "Emma Wilson",
-      clientPhone: "7777777777",
-      date: "2026-05-20",
-      time: "15:45",
-      type: "Online",
-      clientType: "Old",
-      status: "Confirmed",
-      fee: "550",
-      notes: "Contract review",
-    },
-    {
-      id: "5",
-      clientName: "David Kumar",
-      clientPhone: "8765432109",
-      date: "2026-05-20",
-      time: "09:00",
-      type: "Offline",
-      clientType: "New",
-      status: "Confirmed",
-      fee: "800",
-      notes: "Initial consultation - Criminal case",
-    },
-    {
-      id: "6",
-      clientName: "Priya Sharma",
-      clientPhone: "9123456789",
-      date: "2026-05-21",
-      time: "11:30",
-      type: "Online",
-      clientType: "Old",
-      status: "Confirmed",
-      fee: "450",
-      notes: "Follow-up on property dispute",
-    },
-    {
-      id: "7",
-      clientName: "Rajesh Patel",
-      clientPhone: "9876123456",
-      date: "2026-05-22",
-      time: "16:00",
-      type: "Offline",
-      clientType: "Old",
-      status: "Pending",
-      fee: "700",
-      notes: "Business partnership agreement",
-    },
-    {
-      id: "8",
-      clientName: "Anjali Verma",
-      clientPhone: "9988776655",
-      date: "2026-05-23",
-      time: "13:30",
-      type: "Online",
-      clientType: "New",
-      status: "Confirmed",
-      fee: "550",
-      notes: "Divorce settlement discussion",
-    },
-    {
-      id: "9",
-      clientName: "Vikram Singh",
-      clientPhone: "9876549876",
-      date: "2026-05-20",
-      time: "12:00",
-      type: "Online",
-      clientType: "New",
-      status: "Pending",
-      fee: "600",
-      notes: "Tax compliance consultation",
-    },
-    {
-      id: "10",
-      clientName: "Neha Gupta",
-      clientPhone: "9765432198",
-      date: "2026-05-24",
-      time: "10:15",
-      type: "Offline",
-      clientType: "Old",
-      status: "Confirmed",
-      fee: "650",
-      notes: "Will and testament preparation",
-    },
-    {
-      id: "11",
-      clientName: "Arjun Reddy",
-      clientPhone: "9654321987",
-      date: "2026-05-21",
-      time: "15:30",
-      type: "Online",
-      clientType: "New",
-      status: "Confirmed",
-      fee: "500",
-      notes: "Employment dispute resolution",
-    },
-    {
-      id: "12",
-      clientName: "Meera Iyer",
-      clientPhone: "9543210876",
-      date: "2026-05-22",
-      time: "14:45",
-      type: "Offline",
-      clientType: "Old",
-      status: "Confirmed",
-      fee: "750",
-      notes: "Intellectual property rights",
-    },
-  ]);
-
-  const [selectedDate, setSelectedDate] = useState(new Date().toISOString().split("T")[0]);
+  const params = useLocalSearchParams();
+  const addAppointmentSheetRef = useRef(null);
+  
+  // Remove recent activities state and imports
+  const [appointments, setAppointments] = useState([]);
+  const [isLoading, setIsLoading] = useState(true);
+  const [isRefreshing, setIsRefreshing] = useState(false);
+  const [pagination, setPagination] = useState({});
+  const [selectedDate, setSelectedDate] = useState(new Date().toISOString().split('T')[0]);
   const [isCalendarOpen, setIsCalendarOpen] = useState(false);
-  const [filterStatus, setFilterStatus] = useState("All");
-  const [filterType, setFilterType] = useState("All");
-  const [filterClientType, setFilterClientType] = useState("All");
 
-  const filteredAppointments = appointments.filter((apt) => {
-    const dateMatch = apt.date === selectedDate;
-    const statusMatch = filterStatus === "All" || apt.status === filterStatus;
-    const typeMatch = filterType === "All" || apt.type === filterType;
-    const clientTypeMatch = filterClientType === "All" || apt.clientType === filterClientType;
-    return dateMatch && statusMatch && typeMatch && clientTypeMatch;
-  });
+  // Client details from navigation params
+  const clientData = {
+    name: params.name || "",
+    phone: params.phone || "",
+    id: params.clientId || "",
+  };
+
+  const fetchAppointments = async (showLoader = true) => {
+    if (showLoader) {
+      setIsLoading(true);
+    }
+
+    try {
+      // Fetch appointments with the selected date
+      // API expects: appointment_date=2026-05-23
+      const appointmentsResult = await getAppointmentsList(
+        selectedDate ? { date: selectedDate } : {}
+      );
+      
+    
+      // Process appointments data
+      if (appointmentsResult.success) {
+        // Check if we have data array
+        if (appointmentsResult.data?.data && Array.isArray(appointmentsResult.data.data)) {
+          // Transform API data to match component expectations
+          const transformedAppointments = appointmentsResult.data.data.map((appointment, index) => {
+            const transformed = {
+              id: appointment.id ? appointment.id.toString() : `temp-${index}`,
+              clientName: appointment.client_name || 'Unknown Client',
+              clientPhone: appointment.client_phone || '',
+              date: appointment.appointment_date ? appointment.appointment_date.split('T')[0] : '',
+              time: appointment.appointment_time || '',
+              type: appointment.appointment_type === 'online' ? 'Online' : 'Offline',
+              clientType: appointment.client_type === 'new_client' ? 'New Client' : 'Existing Client',
+              status: appointment.status_text || 'Pending',
+              fee: appointment.fee_amount ? appointment.fee_amount.toString() : '0',
+              notes: appointment.remarks || '',
+              paymentMethod: appointment.payment_method || 'cash',
+              typeLabel: appointment.type_label || appointment.appointment_type || '',
+              clientLabel: appointment.client_label || (appointment.client_type === 'new_client' ? 'New Client' : 'Existing Client'),
+              addedBy: appointment.added_by || null,
+            };
+            
+            return transformed;
+          });
+          
+          setAppointments(transformedAppointments);
+          setPagination(appointmentsResult.pagination || {});
+        } else {
+          setAppointments([]);
+          setPagination({});
+        }
+      } else {
+        showErrorToast(appointmentsResult.message || "Failed to load appointments");
+        setAppointments([]);
+        setPagination({});
+      }
+
+    } catch (error) {
+      showErrorToast("An unexpected error occurred");
+      setAppointments([]);
+      setPagination({});
+    } finally {
+      setIsLoading(false);
+      setIsRefreshing(false);
+    }
+  };
+
+  // Fetch appointments on mount and when date changes
+  useEffect(() => {
+    fetchAppointments();
+  }, [selectedDate]);
+
+  // Refresh appointments when screen comes into focus
+  useFocusEffect(
+    useCallback(() => {
+      fetchAppointments(false);
+      
+      // Check if we should open the appointment sheet
+      if (params.openSheet === "1" && clientData.name && clientData.phone) {
+        // Small delay to ensure the sheet is ready
+        setTimeout(() => {
+          addAppointmentSheetRef.current?.snapToIndex(0);
+        }, 500);
+      }
+    }, [params.openSheet, clientData.name, clientData.phone])
+  );
+
+  const onRefresh = () => {
+    setIsRefreshing(true);
+    fetchAppointments(false);
+  };
+
+  const handleAppointmentSaved = () => {
+    // Refresh the appointments list when a new appointment is saved
+    fetchAppointments(false);
+  };
+
+  // Show only appointments data
+  const displayData = appointments;
 
   const getStatusColor = (status) => {
     if (status === "Confirmed") return { bg: "#ecfdf5", text: "#10b981" };
     if (status === "Pending") return { bg: "#fef3c7", text: "#f59e0b" };
-    return { bg: "#fee2e2", text: "#ef4444" };
+    if (status === "Cancelled") return { bg: "#fee2e2", text: "#ef4444" };
+    return { bg: "#f1f5f9", text: "#64748b" };
   };
 
   const getTypeColor = (type) => {
     return type === "Online" ? "#3b82f6" : "#8b5cf6";
   };
 
-  const formatDate = (dateStr) => {
-    const date = new Date(dateStr + "T00:00:00");
-    return date.toLocaleDateString("en-US", {
-      weekday: "long",
-      year: "numeric",
-      month: "long",
-      day: "numeric",
+  const formatDate = (dateString) => {
+    if (!dateString) return '';
+    const date = new Date(dateString);
+    return date.toLocaleDateString('en-GB', {
+      day: '2-digit',
+      month: 'short',
+      year: 'numeric'
     });
   };
 
@@ -209,229 +166,220 @@ export default function AppointmentsScreen() {
     >
       {/* HEADER */}
       <Animated.View style={styles.header} entering={FadeInUp.duration(600)}>
-        <Text style={styles.greeting}>Appointments</Text>
-        <Text style={styles.title}>All Scheduled Meetings</Text>
-      </Animated.View>
-
-      {/* CALENDAR BUTTON */}
-      <Animated.View
-        style={styles.calendarButtonSection}
-        entering={FadeInUp.duration(600).delay(100)}
-      >
-        <TouchableOpacity
-          style={styles.calendarButton}
-          onPress={() => setIsCalendarOpen(true)}
-        >
-          <Ionicons name="calendar-outline" size={20} color="#3b82f6" />
-          <View style={styles.calendarButtonText}>
-            <Text style={styles.calendarButtonLabel}>Select Date</Text>
-            <Text style={styles.calendarButtonValue}>{formatDate(selectedDate)}</Text>
-          </View>
-          <Ionicons name="chevron-forward" size={20} color="#94a3b8" />
-        </TouchableOpacity>
-      </Animated.View>
-
-      {/* STATUS FILTER */}
-      <Animated.View
-        style={styles.filterSection}
-        entering={FadeInUp.duration(600).delay(200)}
-      >
-        <Text style={styles.filterLabel}>Status</Text>
-        <ScrollView
-          horizontal
-          showsHorizontalScrollIndicator={false}
-          contentContainerStyle={styles.filterRow}
-        >
-          {["All", "Confirmed", "Pending"].map((status) => (
+        <View style={styles.headerContent}>
+          <Text style={styles.greeting}>Appointments</Text>
+          <Text style={styles.title}>
+            {appointments.length} appointment{appointments.length !== 1 ? 's' : ''} on {new Date(selectedDate).toLocaleDateString('en-GB', {
+              day: '2-digit',
+              month: 'short',
+              year: 'numeric'
+            })}
+          </Text>
+        </View>
+        
+        <View style={styles.headerActions}>
+          {/* Today Button */}
+          {selectedDate !== new Date().toISOString().split('T')[0] && (
             <TouchableOpacity
-              key={status}
-              style={[
-                styles.filterButton,
-                filterStatus === status && styles.filterButtonActive,
-              ]}
-              onPress={() => setFilterStatus(status)}
+              style={styles.todayButton}
+              onPress={() => setSelectedDate(new Date().toISOString().split('T')[0])}
+              activeOpacity={0.8}
             >
-              <Text
-                style={[
-                  styles.filterButtonText,
-                  filterStatus === status && styles.filterButtonTextActive,
-                ]}
-              >
-                {status}
-              </Text>
+              <Text style={styles.todayButtonText}>Today</Text>
             </TouchableOpacity>
-          ))}
-        </ScrollView>
-      </Animated.View>
-
-      {/* TYPE FILTER */}
-      <Animated.View
-        style={styles.filterSection}
-        entering={FadeInUp.duration(600).delay(250)}
-      >
-        <Text style={styles.filterLabel}>Type</Text>
-        <ScrollView
-          horizontal
-          showsHorizontalScrollIndicator={false}
-          contentContainerStyle={styles.filterRow}
-        >
-          {["All", "Online", "Offline"].map((type) => (
-            <TouchableOpacity
-              key={type}
-              style={[
-                styles.filterButton,
-                filterType === type && styles.filterButtonActive,
-              ]}
-              onPress={() => setFilterType(type)}
-            >
-              <Text
-                style={[
-                  styles.filterButtonText,
-                  filterType === type && styles.filterButtonTextActive,
-                ]}
-              >
-                {type}
-              </Text>
-            </TouchableOpacity>
-          ))}
-        </ScrollView>
-      </Animated.View>
-
-      {/* CLIENT TYPE FILTER */}
-      <Animated.View
-        style={styles.filterSection}
-        entering={FadeInUp.duration(600).delay(300)}
-      >
-        <Text style={styles.filterLabel}>Client</Text>
-        <ScrollView
-          horizontal
-          showsHorizontalScrollIndicator={false}
-          contentContainerStyle={styles.filterRow}
-        >
-          {["All", "New", "Old"].map((clientType) => (
-            <TouchableOpacity
-              key={clientType}
-              style={[
-                styles.filterButton,
-                filterClientType === clientType && styles.filterButtonActive,
-              ]}
-              onPress={() => setFilterClientType(clientType)}
-            >
-              <Text
-                style={[
-                  styles.filterButtonText,
-                  filterClientType === clientType && styles.filterButtonTextActive,
-                ]}
-              >
-                {clientType}
-              </Text>
-            </TouchableOpacity>
-          ))}
-        </ScrollView>
+          )}
+          
+          {/* Date Picker Button */}
+          <TouchableOpacity
+            style={styles.dateButton}
+            onPress={() => setIsCalendarOpen(true)}
+            activeOpacity={0.8}
+          >
+            <Ionicons name="calendar-outline" size={20} color="#3b82f6" />
+            <Text style={styles.dateButtonText}>
+              {new Date(selectedDate).toLocaleDateString('en-GB', {
+                day: '2-digit',
+                month: 'short'
+              })}
+            </Text>
+          </TouchableOpacity>
+        </View>
       </Animated.View>
 
       {/* APPOINTMENTS LIST */}
-      <FlatList
-        data={filteredAppointments}
-        keyExtractor={(item) => item.id}
-        scrollEnabled={true}
-        contentContainerStyle={styles.listContent}
-        renderItem={({ item, index }) => {
-          const statusColor = getStatusColor(item.status);
-          const typeColor = getTypeColor(item.type);
-          return (
-            <Animated.View
-              style={styles.appointmentCard}
-              entering={FadeInUp.duration(600).delay(index * 100)}
-            >
-              <LinearGradient
-                colors={["#fff", "#f8fafc"]}
-                start={{ x: 0, y: 0 }}
-                end={{ x: 1, y: 1 }}
-                style={styles.cardGradient}
+      {isLoading ? (
+        <View style={styles.loadingContainer}>
+          <ActivityIndicator size="large" color="#3b82f6" />
+          <Text style={styles.loadingText}>Loading appointments...</Text>
+        </View>
+      ) : (
+        <FlatList
+          data={displayData}
+          keyExtractor={(item) => item.id}
+          scrollEnabled={true}
+          contentContainerStyle={styles.listContent}
+          refreshControl={
+            <RefreshControl
+              refreshing={isRefreshing}
+              onRefresh={onRefresh}
+              colors={["#3b82f6"]}
+              tintColor="#3b82f6"
+            />
+          }
+          renderItem={({ item, index }) => {
+            const statusColor = getStatusColor(item.status);
+            const typeColor = getTypeColor(item.type);
+            
+            return (
+              <Animated.View
+                style={styles.appointmentCard}
+                entering={FadeInUp.duration(600).delay(index * 100)}
               >
-                <View style={styles.cardHeader}>
-                  <View style={styles.cardLeft}>
-                    <View style={[styles.typeIcon, { backgroundColor: typeColor + "20" }]}>
-                      <Ionicons
-                        name={item.type === "Online" ? "videocam-outline" : "location-outline"}
-                        size={20}
-                        color={typeColor}
-                      />
+                <LinearGradient
+                  colors={["#ffffff", "#f8fafc"]}
+                  start={{ x: 0, y: 0 }}
+                  end={{ x: 1, y: 1 }}
+                  style={styles.cardGradient}
+                >
+                  {/* Card Header */}
+                  <View style={styles.cardHeader}>
+                    <View style={styles.cardLeft}>
+                      <View style={[styles.typeIcon, { backgroundColor: typeColor + "15" }]}>
+                        <Ionicons
+                          name={item.type === "Online" ? "videocam" : "location"}
+                          size={22}
+                          color={typeColor}
+                        />
+                      </View>
+                      <View style={styles.cardInfo}>
+                        <Text style={styles.clientName}>{item.clientName}</Text>
+                        <Text style={styles.clientType}>
+                          {item.clientType} • {item.type}
+                        </Text>
+                      </View>
                     </View>
-                    <View style={styles.cardInfo}>
-                      <Text style={styles.clientName}>{item.clientName}</Text>
-                      <Text style={styles.appointmentType}>
-                        {item.type} • {item.clientType} Client
+                    <View style={[styles.statusBadge, { backgroundColor: statusColor.bg }]}>
+                      {/* <Text style={[styles.statusText, { color: statusColor.text }]}>
+                        {item.status}
+                      </Text> */}
+                    </View>
+                  </View>
+
+                  {/* Card Body */}
+                  <View style={styles.cardBody}>
+                    <View style={styles.detailsGrid}>
+                      <View style={styles.detailItem}>
+                        <View style={styles.detailIcon}>
+                          <Ionicons name="calendar" size={16} color="#64748b" />
+                        </View>
+                        <View style={styles.detailContent}>
+                          <Text style={styles.detailLabel}>Date</Text>
+                          <Text style={styles.detailValue}>
+                            {formatDate(item.date) || 'Not set'}
+                          </Text>
+                        </View>
+                      </View>
+
+                      <View style={styles.detailItem}>
+                        <View style={styles.detailIcon}>
+                          <Ionicons name="time" size={16} color="#64748b" />
+                        </View>
+                        <View style={styles.detailContent}>
+                          <Text style={styles.detailLabel}>Time</Text>
+                          <Text style={styles.detailValue}>{item.time || 'Not set'}</Text>
+                        </View>
+                      </View>
+
+                      {item.clientPhone && (
+                        <View style={styles.detailItem}>
+                          <View style={styles.detailIcon}>
+                            <Ionicons name="call" size={16} color="#64748b" />
+                          </View>
+                          <View style={styles.detailContent}>
+                            <Text style={styles.detailLabel}>Phone</Text>
+                            <Text style={styles.detailValue}>{item.clientPhone}</Text>
+                          </View>
+                        </View>
+                      )}
+
+                      {item.fee && item.fee !== '0' && (
+                        <View style={styles.detailItem}>
+                          <View style={styles.detailIcon}>
+                            <Ionicons name="cash" size={16} color="#64748b" />
+                          </View>
+                          <View style={styles.detailContent}>
+                            <Text style={styles.detailLabel}>Fee</Text>
+                            <Text style={styles.detailValue}>₹{item.fee}</Text>
+                          </View>
+                        </View>
+                      )}
+                    </View>
+
+                    {item.notes && (
+                      <View style={styles.notesContainer}>
+                        <Text style={styles.notesLabel}>Notes</Text>
+                        <Text style={styles.notesText}>{item.notes}</Text>
+                      </View>
+                    )}
+                  </View>
+
+                  {/* Card Footer */}
+                  <View style={styles.cardFooter}>
+                    <View style={styles.paymentInfo}>
+                      <Ionicons 
+                        name={item.paymentMethod === 'cash' ? "cash" : "card"} 
+                        size={14} 
+                        color="#94a3b8" 
+                      />
+                      <Text style={styles.paymentText}>
+                        {item.paymentMethod === 'cash' ? 'Cash Payment' : 'Online Payment'}
                       </Text>
                     </View>
+                    {item.addedBy && (
+                      <Text style={styles.addedByText}>
+                        Added by {item.addedBy.name || 'Unknown'}
+                      </Text>
+                    )}
                   </View>
-                  <View style={[styles.statusBadge, { backgroundColor: statusColor.bg }]}>
-                    <Text style={[styles.statusText, { color: statusColor.text }]}>
-                      {item.status}
-                    </Text>
-                  </View>
-                </View>
+                </LinearGradient>
+              </Animated.View>
+            );
+          }}
+        />
+      )}
 
-                <View style={styles.cardDivider} />
-
-                <View style={styles.cardDetails}>
-                  <View style={styles.detailRow}>
-                    <Ionicons name="time-outline" size={16} color="#64748b" />
-                    <Text style={styles.detailText}>{item.time}</Text>
-                  </View>
-                  <View style={styles.detailRow}>
-                    <Ionicons name="call-outline" size={16} color="#64748b" />
-                    <Text style={styles.detailText}>{item.clientPhone}</Text>
-                  </View>
-                  {item.fee && (
-                    <View style={styles.detailRow}>
-                      <Ionicons name="cash-outline" size={16} color="#64748b" />
-                      <Text style={styles.detailText}>₹{item.fee}</Text>
-                    </View>
-                  )}
-                </View>
-
-                {item.notes && (
-                  <>
-                    <View style={styles.cardDivider} />
-                    <View style={styles.notesSection}>
-                      <Text style={styles.notesLabel}>Notes</Text>
-                      <Text style={styles.notesText}>{item.notes}</Text>
-                    </View>
-                  </>
-                )}
-
-                <View style={styles.cardDivider} />
-                <View style={styles.actionButtons}>
-                  <TouchableOpacity style={styles.actionButton}>
-                    <Ionicons name="call-outline" size={16} color="#ef4444" />
-                    <Text style={styles.actionButtonText}>Call</Text>
-                  </TouchableOpacity>
-                  <TouchableOpacity style={styles.actionButton}>
-                    <Ionicons name="chatbubble-outline" size={16} color="#3b82f6" />
-                    <Text style={styles.actionButtonText}>Message</Text>
-                  </TouchableOpacity>
-                  <TouchableOpacity style={styles.actionButton}>
-                    <Ionicons name="pencil-outline" size={16} color="#f59e0b" />
-                    <Text style={styles.actionButtonText}>Edit</Text>
-                  </TouchableOpacity>
-                </View>
-              </LinearGradient>
-            </Animated.View>
-          );
-        }}
-      />
-
-      {filteredAppointments.length === 0 && (
+      {displayData.length === 0 && !isLoading && (
         <View style={styles.emptyState}>
           <Ionicons name="calendar-outline" size={48} color="#94a3b8" />
           <Text style={styles.emptyTitle}>No appointments found</Text>
-          <Text style={styles.emptySubtitle}>Try selecting a different date or filter</Text>
+          <Text style={styles.emptySubtitle}>
+            {appointments.length === 0
+              ? "No appointments have been scheduled yet" 
+              : "Try adjusting your date filter"}
+          </Text>
         </View>
       )}
 
-      {/* CALENDAR MODAL */}
+      {/* PAGINATION INFO */}
+      {pagination && pagination.total > 0 && (
+        <View style={styles.paginationInfo}>
+          <Text style={styles.paginationText}>
+            Showing {displayData.length} of {pagination.total} appointments
+            {pagination.current_page && pagination.last_page && (
+              ` • Page ${pagination.current_page} of ${pagination.last_page}`
+            )}
+          </Text>
+        </View>
+      )}
+      
+      {/* Add Appointment Sheet */}
+      <AddAppointmentSheet
+        ref={addAppointmentSheetRef}
+        prefill={clientData.name ? clientData : null}
+        onSave={handleAppointmentSaved}
+      />
+
+      {/* Calendar Modal */}
       <Modal
         visible={isCalendarOpen}
         transparent
@@ -455,6 +403,13 @@ export default function AppointmentsScreen() {
               onDayPress={(day) => {
                 setSelectedDate(day.dateString);
                 setIsCalendarOpen(false);
+              }}
+              markedDates={{
+                [selectedDate]: {
+                  selected: true,
+                  selectedColor: "#3b82f6",
+                  selectedTextColor: "#fff",
+                },
               }}
               theme={{
                 backgroundColor: "#fff",
@@ -485,8 +440,74 @@ const styles = StyleSheet.create({
     paddingHorizontal: 16,
   },
 
+  loadingContainer: {
+    flex: 1,
+    justifyContent: "center",
+    alignItems: "center",
+    paddingVertical: 60,
+  },
+
+  loadingText: {
+    marginTop: 12,
+    fontSize: 14,
+    color: "#64748b",
+    fontWeight: "600",
+  },
+
   header: {
     marginBottom: 20,
+    flexDirection: "row",
+    alignItems: "center",
+    justifyContent: "space-between",
+    gap: 12,
+  },
+
+  headerContent: {
+    flex: 1,
+  },
+
+  headerActions: {
+    flexDirection: "row",
+    alignItems: "center",
+    gap: 8,
+  },
+
+  todayButton: {
+    paddingHorizontal: 12,
+    paddingVertical: 10,
+    borderRadius: 10,
+    backgroundColor: "#eff6ff",
+    borderWidth: 1,
+    borderColor: "#bfdbfe",
+  },
+
+  todayButtonText: {
+    fontSize: 14,
+    fontWeight: "700",
+    color: "#3b82f6",
+  },
+
+  dateButton: {
+    flexDirection: "row",
+    alignItems: "center",
+    gap: 8,
+    paddingHorizontal: 12,
+    paddingVertical: 10,
+    borderRadius: 10,
+    backgroundColor: "#fff",
+    borderWidth: 1,
+    borderColor: "#e2e8f0",
+    shadowColor: "#0f172a",
+    shadowOffset: { width: 0, height: 2 },
+    shadowOpacity: 0.05,
+    shadowRadius: 4,
+    elevation: 2,
+  },
+
+  dateButtonText: {
+    fontSize: 14,
+    fontWeight: "700",
+    color: "#0f172a",
   },
 
   greeting: {
@@ -503,81 +524,39 @@ const styles = StyleSheet.create({
     letterSpacing: -0.5,
   },
 
-  calendarButtonSection: {
+  statsSection: {
     marginBottom: 16,
   },
 
-  calendarButton: {
-    flexDirection: "row",
-    alignItems: "center",
+  statsRow: {
     gap: 12,
-    backgroundColor: "#fff",
-    borderWidth: 1,
-    borderColor: "#e2e8f0",
-    borderRadius: 14,
-    paddingHorizontal: 14,
-    paddingVertical: 14,
-  },
-
-  calendarButtonText: {
-    flex: 1,
-  },
-
-  calendarButtonLabel: {
-    fontSize: 11,
-    fontWeight: "800",
-    color: "#94a3b8",
-    marginBottom: 2,
-    textTransform: "uppercase",
-    letterSpacing: 0.5,
-  },
-
-  calendarButtonValue: {
-    fontSize: 14,
-    fontWeight: "900",
-    color: "#0f172a",
-  },
-
-  filterSection: {
-    marginBottom: 12,
-  },
-
-  filterLabel: {
-    fontSize: 11,
-    fontWeight: "800",
-    color: "#0f172a",
-    marginBottom: 6,
-    textTransform: "uppercase",
-    letterSpacing: 0.5,
-  },
-
-  filterRow: {
-    gap: 6,
     paddingBottom: 4,
   },
 
-  filterButton: {
-    paddingHorizontal: 12,
-    paddingVertical: 6,
-    borderRadius: 8,
+  statCard: {
     backgroundColor: "#fff",
     borderWidth: 1,
     borderColor: "#e2e8f0",
+    borderRadius: 12,
+    paddingHorizontal: 16,
+    paddingVertical: 12,
+    alignItems: "center",
+    minWidth: 80,
   },
 
-  filterButtonActive: {
-    backgroundColor: "#3b82f6",
-    borderColor: "#3b82f6",
+  statNumber: {
+    fontSize: 20,
+    fontWeight: "900",
+    color: "#0f172a",
+    marginBottom: 2,
   },
 
-  filterButtonText: {
-    fontSize: 11,
+  statLabel: {
+    fontSize: 10,
     fontWeight: "700",
     color: "#64748b",
-  },
-
-  filterButtonTextActive: {
-    color: "#fff",
+    textTransform: "uppercase",
+    letterSpacing: 0.5,
   },
 
   listContent: {
@@ -585,41 +564,39 @@ const styles = StyleSheet.create({
   },
 
   appointmentCard: {
-    marginBottom: 12,
-    borderRadius: 14,
+    marginBottom: 16,
+    borderRadius: 16,
     overflow: "hidden",
     shadowColor: "#0f172a",
     shadowOffset: { width: 0, height: 4 },
     shadowOpacity: 0.08,
-    shadowRadius: 12,
-    elevation: 4,
+    shadowRadius: 16,
+    elevation: 6,
+    backgroundColor: "#fff",
   },
 
   cardGradient: {
-    borderWidth: 1,
-    borderColor: "#e2e8f0",
-    borderRadius: 14,
-    padding: 12,
+    padding: 20,
   },
 
   cardHeader: {
     flexDirection: "row",
     alignItems: "center",
     justifyContent: "space-between",
-    marginBottom: 10,
+    marginBottom: 16,
   },
 
   cardLeft: {
     flexDirection: "row",
     alignItems: "center",
-    gap: 10,
+    gap: 12,
     flex: 1,
   },
 
   typeIcon: {
-    width: 40,
-    height: 40,
-    borderRadius: 10,
+    width: 48,
+    height: 48,
+    borderRadius: 12,
     justifyContent: "center",
     alignItems: "center",
   },
@@ -629,92 +606,123 @@ const styles = StyleSheet.create({
   },
 
   clientName: {
-    fontSize: 14,
+    fontSize: 18,
     fontWeight: "900",
     color: "#0f172a",
-    marginBottom: 2,
+    marginBottom: 4,
   },
 
-  appointmentType: {
-    fontSize: 11,
+  clientType: {
+    fontSize: 13,
     color: "#64748b",
     fontWeight: "600",
   },
 
   statusBadge: {
-    paddingHorizontal: 10,
+    paddingHorizontal: 12,
     paddingVertical: 6,
-    borderRadius: 8,
+    borderRadius: 20,
   },
 
   statusText: {
-    fontSize: 11,
+    fontSize: 12,
     fontWeight: "800",
+    textTransform: "uppercase",
+    letterSpacing: 0.5,
   },
 
-  cardDivider: {
-    height: 1,
-    backgroundColor: "#f1f5f9",
-    marginVertical: 8,
+  cardBody: {
+    marginBottom: 16,
   },
 
-  cardDetails: {
-    gap: 6,
+  detailsGrid: {
+    gap: 12,
   },
 
-  detailRow: {
+  detailItem: {
     flexDirection: "row",
     alignItems: "center",
-    gap: 8,
+    gap: 12,
   },
 
-  detailText: {
-    fontSize: 12,
-    color: "#334155",
-    fontWeight: "600",
+  detailIcon: {
+    width: 32,
+    height: 32,
+    borderRadius: 8,
+    backgroundColor: "#f1f5f9",
+    justifyContent: "center",
+    alignItems: "center",
   },
 
-  notesSection: {
-    marginTop: 2,
+  detailContent: {
+    flex: 1,
+  },
+
+  detailLabel: {
+    fontSize: 11,
+    fontWeight: "700",
+    color: "#94a3b8",
+    textTransform: "uppercase",
+    letterSpacing: 0.5,
+    marginBottom: 2,
+  },
+
+  detailValue: {
+    fontSize: 14,
+    fontWeight: "700",
+    color: "#0f172a",
+  },
+
+  notesContainer: {
+    marginTop: 16,
+    padding: 12,
+    backgroundColor: "#f8fafc",
+    borderRadius: 12,
+    borderWidth: 1,
+    borderColor: "#e2e8f0",
   },
 
   notesLabel: {
-    fontSize: 10,
+    fontSize: 11,
     fontWeight: "800",
-    color: "#94a3b8",
-    marginBottom: 2,
+    color: "#64748b",
     textTransform: "uppercase",
-    letterSpacing: 0.3,
+    letterSpacing: 0.5,
+    marginBottom: 6,
   },
 
   notesText: {
-    fontSize: 12,
+    fontSize: 13,
     color: "#334155",
     fontWeight: "500",
-    lineHeight: 16,
+    lineHeight: 18,
   },
 
-  actionButtons: {
+  cardFooter: {
     flexDirection: "row",
-    gap: 6,
-    justifyContent: "space-around",
+    justifyContent: "space-between",
+    alignItems: "center",
+    paddingTop: 16,
+    borderTopWidth: 1,
+    borderTopColor: "#f1f5f9",
   },
 
-  actionButton: {
-    flex: 1,
+  paymentInfo: {
     flexDirection: "row",
     alignItems: "center",
-    justifyContent: "center",
-    gap: 4,
-    paddingVertical: 6,
-    borderRadius: 6,
-    backgroundColor: "#f8fafc",
+    gap: 6,
   },
 
-  actionButtonText: {
-    fontSize: 10,
-    fontWeight: "700",
-    color: "#334155",
+  paymentText: {
+    fontSize: 12,
+    color: "#64748b",
+    fontWeight: "600",
+  },
+
+  addedByText: {
+    fontSize: 11,
+    color: "#94a3b8",
+    fontWeight: "500",
   },
 
   emptyState: {
@@ -736,6 +744,18 @@ const styles = StyleSheet.create({
     color: "#64748b",
     fontWeight: "600",
     marginTop: 4,
+    textAlign: "center",
+  },
+
+  paginationInfo: {
+    paddingVertical: 16,
+    alignItems: "center",
+  },
+
+  paginationText: {
+    fontSize: 12,
+    color: "#64748b",
+    fontWeight: "600",
   },
 
   modalOverlay: {

@@ -12,6 +12,8 @@ import {
     TouchableOpacity,
     UIManager,
     View,
+    ActivityIndicator,
+    RefreshControl,
 } from "react-native";
   
   import { Ionicons } from "@expo/vector-icons";
@@ -19,51 +21,138 @@ import {
   import { useCallback, useEffect, useMemo, useRef, useState } from "react";
   import { useSafeAreaInsets } from "react-native-safe-area-context";
   import { CalendarList } from "react-native-calendars";
-  import { router } from "expo-router";
-  
-  const DATA = [
-    {
-      id: "1",
-      name: "John Doe",
-      phone: "9876543210",
-      location: "New York",
-      lead: "Hot",
-      type: "Incoming",
-      date: "Today",
-    },
-  
-    {
-      id: "2",
-      name: "Sarah Smith",
-      phone: "9999999999",
-      location: "Chicago",
-      lead: "Warm",
-      type: "Outgoing",
-      date: "Yesterday",
-    },
-  
-    {
-      id: "3",
-      name: "Michael",
-      phone: "8888888888",
-      location: "Texas",
-      lead: "Cold",
-      type: "Incoming",
-      date: "This Week",
-    },
-  ];
+  import { router, useFocusEffect } from "expo-router";
+  import { getClients } from "../../services/api/clientService";
+  import { showErrorToast } from "../../utils/toast";
+  import AddAppointmentSheet from "../components/AddAppointmentSheet";
   
   export default function ClientsScreen() {
     const insets = useSafeAreaInsets();
-    const [selectedDateFilter, setSelectedDateFilter] = useState("Today");
+    const addAppointmentSheetRef = useRef(null);
+    const [selectedClient, setSelectedClient] = useState(null);
+    const [selectedDateFilter, setSelectedDateFilter] = useState("All");
     const [selectedLeadFilter, setSelectedLeadFilter] = useState("All");
-    const [customDate, setCustomDate] = useState(""); // YYYY-MM-DD
-    const [customDay, setCustomDay] = useState(null); // Date | null
+    const [customFromDate, setCustomFromDate] = useState(""); // YYYY-MM-DD
+    const [customToDate, setCustomToDate] = useState(""); // YYYY-MM-DD
     const [isCalendarOpen, setIsCalendarOpen] = useState(false);
-    const [draftDate, setDraftDate] = useState(null); // "YYYY-MM-DD" | null
+    const [isSelectingFromDate, setIsSelectingFromDate] = useState(true);
+    const [isCalendarLoading, setIsCalendarLoading] = useState(false);
+    const [clients, setClients] = useState([]);
+    const [apiCounts, setApiCounts] = useState({});
+    const [searchQuery, setSearchQuery] = useState("");
+    const [isLoading, setIsLoading] = useState(true);
+    const [isRefreshing, setIsRefreshing] = useState(false);
+    const [currentPage, setCurrentPage] = useState(1);
+    const [pagination, setPagination] = useState(null);
+    const [isLoadingMore, setIsLoadingMore] = useState(false);
   
-    const DATE_FILTERS = ["Today", "Yesterday", "This Week", "Custom"];
+    const DATE_FILTERS = ["All", "Today", "Yesterday", "This Week", "Custom"];
     const LEAD_FILTERS = ["All", "Cold", "Warm", "Hot"];
+
+    const fetchClients = async (showLoader = true, page = 1, append = false) => {
+      if (showLoader && !append) {
+        setIsLoading(true);
+      }
+      
+      if (append) {
+        setIsLoadingMore(true);
+      }
+
+      try {
+        // Build API parameters
+        const params = {
+          page: page,
+          per_page: 10,
+        };
+        
+        // Add date filter
+        if (selectedDateFilter !== "All") {
+          if (selectedDateFilter === "Custom") {
+            if (customFromDate && customToDate) {
+              params.date_filter = "custom";
+              params.from_date = customFromDate;
+              params.to_date = customToDate;
+            }
+          } else {
+            params.date_filter = selectedDateFilter.toLowerCase().replace(" ", "_");
+          }
+        }
+        
+        // Add lead filter
+        if (selectedLeadFilter !== "All") {
+          params.lead_type = selectedLeadFilter.toLowerCase();
+        }
+
+        const result = await getClients(params);
+
+        if (result.success && result.data?.data) {
+          if (append) {
+            setClients(prev => [...prev, ...result.data.data]);
+          } else {
+            setClients(result.data.data);
+          }
+          
+          // Handle pagination - check multiple possible response structures
+          const paginationData = result.pagination || result.data.pagination || null;
+          setPagination(paginationData);
+          
+          // Update counts from API response
+          if (result.counts || result.data.counts) {
+            setApiCounts(result.counts || result.data.counts);
+          }
+        } else {
+          showErrorToast(result.message || "Failed to load clients");
+          if (!append) {
+            setClients([]);
+            setPagination(null);
+          }
+        }
+      } catch (error) {
+        showErrorToast("An unexpected error occurred");
+        if (!append) {
+          setClients([]);
+          setPagination(null);
+        }
+      } finally {
+        setIsLoading(false);
+        setIsRefreshing(false);
+        setIsLoadingMore(false);
+      }
+    };
+
+    // Fetch data on mount and when filters change
+    useEffect(() => {
+      setCurrentPage(1);
+      fetchClients(true, 1, false);
+    }, [selectedDateFilter, selectedLeadFilter, customFromDate, customToDate]);
+
+    // Refresh data when screen comes into focus
+    useFocusEffect(
+      useCallback(() => {
+        setCurrentPage(1);
+        fetchClients(false, 1, false);
+      }, [])
+    );
+
+    const onRefresh = () => {
+      setIsRefreshing(true);
+      setCurrentPage(1);
+      fetchClients(false, 1, false);
+    };
+    
+    const loadMore = () => {
+      if (pagination && pagination.current_page < pagination.last_page && !isLoadingMore) {
+        const nextPage = currentPage + 1;
+        setCurrentPage(nextPage);
+        fetchClients(false, nextPage, true);
+      }
+    };
+
+    const handleAppointmentSaved = () => {
+      // Refresh the clients list and close the sheet
+      fetchClients(false);
+      setSelectedClient(null);
+    };
 
     const parseYmd = useCallback((value) => {
       // Accepts YYYY-MM-DD; returns Date at local midnight or null
@@ -80,89 +169,115 @@ import {
       return dt;
     }, []);
 
-    // kept for future use if you store real Date objects in UI
-    // const toYmd = useCallback((date) => { ... }, []);
-
     const getItemDate = useCallback((item) => {
-      // Prefer real timestamps if you add them later.
-      if (item?.createdAt) {
-        const d = new Date(item.createdAt);
-        return isNaN(d.getTime()) ? null : d;
+      // Use created_date from API response
+      if (item?.created_date) {
+        // API returns formatted date like "23 May 2026"
+        // Try to parse it properly
+        const dateStr = item.created_date;
+        
+        // Try parsing as-is first
+        let date = new Date(dateStr);
+        
+        // If invalid, try to parse the formatted date
+        if (isNaN(date.getTime())) {
+          // Try parsing "DD MMM YYYY" format
+          const months = {
+            'jan': 0, 'january': 0,
+            'feb': 1, 'february': 1,
+            'mar': 2, 'march': 2,
+            'apr': 3, 'april': 3,
+            'may': 4,
+            'jun': 5, 'june': 5,
+            'jul': 6, 'july': 6,
+            'aug': 7, 'august': 7,
+            'sep': 8, 'september': 8,
+            'oct': 9, 'october': 9,
+            'nov': 10, 'november': 10,
+            'dec': 11, 'december': 11
+          };
+          
+          const parts = dateStr.trim().split(/\s+/);
+          if (parts.length === 3) {
+            const day = parseInt(parts[0]);
+            const monthStr = parts[1].toLowerCase();
+            const year = parseInt(parts[2]);
+            const month = months[monthStr];
+            
+            if (!isNaN(day) && month !== undefined && !isNaN(year)) {
+              date = new Date(year, month, day);
+            }
+          }
+        }
+        
+        return isNaN(date.getTime()) ? null : date;
       }
-
-      // Fallback for current demo data that only has labels.
-      const now = new Date();
-      const today = new Date(now.getFullYear(), now.getMonth(), now.getDate());
-      if (item?.date === "Today") return today;
-      if (item?.date === "Yesterday") return new Date(today.getTime() - 24 * 60 * 60 * 1000);
-      if (item?.date === "This Week") return new Date(today.getTime() - 3 * 24 * 60 * 60 * 1000);
       return null;
     }, []);
   
     const filteredData = useMemo(() => {
-      return DATA.filter((item) => {
-        const matchesDate =
-          selectedDateFilter === "Custom"
-            ? (() => {
-                if (!customDay) return true;
-                const itemDate = getItemDate(item);
-                if (!itemDate) return false;
-                const itemMidnight = new Date(
-                  itemDate.getFullYear(),
-                  itemDate.getMonth(),
-                  itemDate.getDate()
-                );
-                return itemMidnight.getTime() === customDay.getTime();
-              })()
-            : item.date === selectedDateFilter;
-        const matchesLead = selectedLeadFilter === "All" ? true : item.lead === selectedLeadFilter;
-        return matchesDate && matchesLead;
+      // Since API handles date and lead filtering, we only need to filter by search query
+      return clients.filter((item) => {
+        // Search filter
+        if (!searchQuery.trim()) return true;
+        
+        const query = searchQuery.toLowerCase().trim();
+        const searchableText = [
+          item.fullname || '',
+          item.phone || '',
+          item.location || '',
+          item.case_type || '',
+          item.referance || '',
+          item.lead_type || '',
+          item.call_type || '',
+          item.remarks || ''
+        ].join(' ').toLowerCase();
+        
+        return searchableText.includes(query);
       });
-    }, [customDay, getItemDate, selectedDateFilter, selectedLeadFilter]);
+    }, [clients, searchQuery]);
 
     const dateCounts = useMemo(() => {
-      const counts = Object.fromEntries(DATE_FILTERS.map((d) => [d, 0]));
-      for (const item of DATA) {
-        const matchesLead = selectedLeadFilter === "All" ? true : item.lead === selectedLeadFilter;
-        if (matchesLead && counts[item.date] !== undefined) counts[item.date] += 1;
+      // Use API counts if available
+      if (apiCounts && Object.keys(apiCounts).length > 0) {
+        return {
+          All: apiCounts.all || 0,
+          Today: apiCounts.today || 0,
+          Yesterday: apiCounts.yesterday || 0,
+          "This Week": apiCounts.this_week || 0,
+          Custom: apiCounts.custom || 0,
+        };
       }
-      if (counts.Custom !== undefined) {
-        if (!customDay) counts.Custom = 0;
-        else {
-          let c = 0;
-          for (const item of DATA) {
-            const matchesLead = selectedLeadFilter === "All" ? true : item.lead === selectedLeadFilter;
-            if (!matchesLead) continue;
-            const itemDate = getItemDate(item);
-            if (!itemDate) continue;
-            const itemMidnight = new Date(itemDate.getFullYear(), itemDate.getMonth(), itemDate.getDate());
-            if (itemMidnight.getTime() === customDay.getTime()) c += 1;
-          }
-          counts.Custom = c;
-        }
-      }
-      return counts;
-    }, [DATE_FILTERS, customDay, getItemDate, selectedLeadFilter]);
+      
+      // Fallback counts
+      return {
+        All: clients.length,
+        Today: 0,
+        Yesterday: 0,
+        "This Week": 0,
+        Custom: 0,
+      };
+    }, [apiCounts, clients.length]);
 
     const leadCounts = useMemo(() => {
-      const counts = Object.fromEntries(LEAD_FILTERS.map((l) => [l, 0]));
-      for (const item of DATA) {
-        const matchesDate =
-          selectedDateFilter === "Custom"
-            ? (() => {
-                if (!customDay) return true;
-                const itemDate = getItemDate(item);
-                if (!itemDate) return false;
-                const itemMidnight = new Date(itemDate.getFullYear(), itemDate.getMonth(), itemDate.getDate());
-                return itemMidnight.getTime() === customDay.getTime();
-              })()
-            : item.date === selectedDateFilter;
-        if (!matchesDate) continue;
-        counts.All += 1;
-        if (counts[item.lead] !== undefined) counts[item.lead] += 1;
+      // Use API counts if available for lead types
+      if (apiCounts && Object.keys(apiCounts).length > 0) {
+        return {
+          All: apiCounts.all || 0,
+          Cold: apiCounts.cold || 0,
+          Warm: apiCounts.warm || 0,
+          Hot: apiCounts.hot || 0,
+        };
       }
-      return counts;
-    }, [LEAD_FILTERS, customDay, getItemDate, selectedDateFilter]);
+      
+      // Fallback counts
+      return {
+        All: clients.length,
+        Cold: 0,
+        Warm: 0,
+        Hot: 0,
+      };
+    }, [apiCounts, clients.length]);
   
     const getLeadColor = (lead) => {
       if (lead === "Hot") return "#ef4444";
@@ -207,7 +322,10 @@ import {
           <View style={styles.header}>
             <Text style={styles.title}>Clients</Text>
             <Text style={styles.subtitle}>
-              {filteredData.length} client{filteredData.length === 1 ? "" : "s"} • Manage all client records
+              {searchQuery.trim() 
+                ? `${filteredData.length} result${filteredData.length === 1 ? "" : "s"} for "${searchQuery}"`
+                : `${filteredData.length} client${filteredData.length === 1 ? "" : "s"} • Manage all client records`
+              }
             </Text>
           </View>
 
@@ -219,7 +337,21 @@ import {
               placeholder="Search clients..."
               placeholderTextColor="#94a3b8"
               style={styles.searchInput}
+              value={searchQuery}
+              onChangeText={setSearchQuery}
+              autoCapitalize="none"
+              autoCorrect={false}
             />
+
+            {searchQuery.length > 0 && (
+              <TouchableOpacity 
+                activeOpacity={0.8} 
+                style={styles.searchClear}
+                onPress={() => setSearchQuery("")}
+              >
+                <Ionicons name="close" size={16} color="#64748b" />
+              </TouchableOpacity>
+            )}
 
             <TouchableOpacity activeOpacity={0.8} style={styles.searchAction}>
               <Ionicons name="options-outline" size={18} color="#64748b" />
@@ -242,8 +374,8 @@ import {
                     LayoutAnimation.configureNext(LayoutAnimation.Presets.easeInEaseOut);
                     setSelectedDateFilter(item);
                     if (item !== "Custom") {
-                      setCustomDate("");
-                      setCustomDay(null);
+                      setCustomFromDate("");
+                      setCustomToDate("");
                     }
                   }}
                   activeOpacity={0.85}
@@ -259,69 +391,47 @@ import {
             })}
           </ScrollView>
 
+          {/* CUSTOM DATE RANGE - BUTTON TO OPEN BOTTOM SHEET */}
           {selectedDateFilter === "Custom" && (
-            <View style={styles.customRangeBox}>
-              <Pressable
-                style={styles.rangePickRow}
-                onPress={() => {
-                  setDraftDate(customDate || null);
-                  setIsCalendarOpen(true);
-                }}
-              >
-                <View style={styles.rangePickLeft}>
-                  <Ionicons name="calendar-outline" size={18} color="#64748b" />
-                  <View style={{ flex: 1, minWidth: 0 }}>
-                    <Text style={styles.rangePickTitle}>Date</Text>
-                    <Text style={styles.rangePickValue} numberOfLines={1}>
-                      {customDay ? customDate : "Pick from calendar"}
-                    </Text>
-                  </View>
+            <TouchableOpacity
+              style={styles.customRangeTrigger}
+              onPress={() => {
+                setIsCalendarOpen(true);
+                setIsCalendarLoading(true);
+                // Simulate calendar load time
+                setTimeout(() => setIsCalendarLoading(false), 300);
+              }}
+              activeOpacity={0.8}
+            >
+              <View style={styles.customRangeContent}>
+                <Ionicons name="calendar-outline" size={20} color="#3b82f6" />
+                <View style={{ flex: 1 }}>
+                  <Text style={styles.customRangeLabel}>Custom Date Range</Text>
+                  <Text style={styles.customRangeValue} numberOfLines={1}>
+                    {customFromDate && customToDate
+                      ? `${customFromDate} to ${customToDate}`
+                      : "Tap to select date range"}
+                  </Text>
                 </View>
-                <Ionicons name="chevron-forward" size={18} color="#94a3b8" />
-              </Pressable>
-
-              <View style={styles.customActions}>
-                <TouchableOpacity
-                  activeOpacity={0.9}
-                  style={styles.customPrimary}
-                  onPress={() => {
-                    LayoutAnimation.configureNext(LayoutAnimation.Presets.easeInEaseOut);
-                    // keep for UI consistency; calendar sets the date immediately
-                  }}
-                >
-                  <Ionicons name="checkmark" size={16} color="#fff" />
-                  <Text style={styles.customPrimaryText}>OK</Text>
-                </TouchableOpacity>
-
-                <TouchableOpacity
-                  activeOpacity={0.9}
-                  style={styles.customGhost}
-                  onPress={() => {
-                    LayoutAnimation.configureNext(LayoutAnimation.Presets.easeInEaseOut);
-                    setCustomDate("");
-                    setCustomDay(null);
-                  }}
-                >
-                  <Ionicons name="close" size={16} color="#334155" />
-                  <Text style={styles.customGhostText}>Clear</Text>
-                </TouchableOpacity>
+                <Ionicons name="chevron-forward" size={20} color="#94a3b8" />
               </View>
-            </View>
+            </TouchableOpacity>
           )}
 
+          {/* CUSTOM DATE RANGE BOTTOM SHEET */}
           <Modal
             visible={isCalendarOpen}
-            animationType="slide"
+            animationType="fade"
             transparent
             onRequestClose={() => setIsCalendarOpen(false)}
           >
             <Pressable style={styles.modalBackdrop} onPress={() => setIsCalendarOpen(false)} />
-            <View style={styles.modalSheet}>
-              <View style={styles.modalHeader}>
+            <View style={styles.dateRangeSheet}>
+              <View style={styles.dateRangeHeader}>
                 <View>
-                  <Text style={styles.modalTitle}>Select date</Text>
-                  <Text style={styles.modalSubtitle}>
-                    Tap any date to select
+                  <Text style={styles.dateRangeTitle}>Select Date Range</Text>
+                  <Text style={styles.dateRangeSubtitle}>
+                    Choose start and end dates
                   </Text>
                 </View>
                 <TouchableOpacity
@@ -329,73 +439,140 @@ import {
                   style={styles.modalClose}
                   onPress={() => setIsCalendarOpen(false)}
                 >
-                  <Ionicons name="close" size={18} color="#0f172a" />
+                  <Ionicons name="close" size={20} color="#0f172a" />
                 </TouchableOpacity>
               </View>
 
-              <CalendarList
-                markedDates={
-                  draftDate
-                    ? {
-                        [draftDate]: {
-                          selected: true,
-                          selectedColor: "#0f172a",
-                          selectedTextColor: "#fff",
-                        },
-                      }
-                    : {}
-                }
-                pastScrollRange={12}
-                futureScrollRange={12}
-                scrollEnabled
-                showScrollIndicator={false}
-                theme={{
-                  backgroundColor: "#ffffff",
-                  calendarBackground: "#ffffff",
-                  textSectionTitleColor: "#64748b",
-                  selectedDayBackgroundColor: "#0f172a",
-                  selectedDayTextColor: "#ffffff",
-                  todayTextColor: "#0f172a",
-                  dayTextColor: "#0f172a",
-                  textDisabledColor: "#cbd5e1",
-                  arrowColor: "#0f172a",
-                  monthTextColor: "#0f172a",
-                  textMonthFontWeight: "800",
-                  textDayFontWeight: "600",
-                }}
-                onDayPress={(day) => {
-                  const picked = day?.dateString;
-                  if (!picked) return;
-                  setDraftDate(picked);
-                }}
-              />
-
-              <View style={styles.modalFooter}>
-                <TouchableOpacity
-                  activeOpacity={0.9}
-                  style={styles.modalGhost}
+              <View style={styles.datePickersContainer}>
+                {/* START DATE */}
+                <Pressable
+                  style={[
+                    styles.datePickerBox,
+                    isSelectingFromDate && styles.datePickerBoxActive
+                  ]}
                   onPress={() => {
-                    setDraftDate(null);
+                    setIsSelectingFromDate(true);
                   }}
                 >
-                  <Text style={styles.modalGhostText}>Reset</Text>
+                  <View style={styles.datePickerLabel}>
+                    <Ionicons name="calendar" size={16} color="#10b981" />
+                    <Text style={styles.datePickerLabelText}>Start Date</Text>
+                    {isSelectingFromDate && (
+                      <View style={styles.activeIndicator}>
+                        <Text style={styles.activeIndicatorText}>Selecting</Text>
+                      </View>
+                    )}
+                  </View>
+                  <Text style={[
+                    styles.datePickerValue,
+                    !customFromDate && styles.datePickerPlaceholder
+                  ]}>
+                    {customFromDate || "Not selected"}
+                  </Text>
+                </Pressable>
+
+                {/* END DATE */}
+                <Pressable
+                  style={[
+                    styles.datePickerBox,
+                    !isSelectingFromDate && styles.datePickerBoxActive
+                  ]}
+                  onPress={() => {
+                    setIsSelectingFromDate(false);
+                  }}
+                >
+                  <View style={styles.datePickerLabel}>
+                    <Ionicons name="calendar" size={16} color="#ef4444" />
+                    <Text style={styles.datePickerLabelText}>End Date</Text>
+                    {!isSelectingFromDate && (
+                      <View style={styles.activeIndicator}>
+                        <Text style={styles.activeIndicatorText}>Selecting</Text>
+                      </View>
+                    )}
+                  </View>
+                  <Text style={[
+                    styles.datePickerValue,
+                    !customToDate && styles.datePickerPlaceholder
+                  ]}>
+                    {customToDate || "Not selected"}
+                  </Text>
+                </Pressable>
+              </View>
+
+              {/* CALENDAR */}
+              <View style={styles.calendarContainer}>
+                {isCalendarLoading ? (
+                  <View style={styles.calendarLoadingContainer}>
+                    <ActivityIndicator size="large" color="#3b82f6" />
+                    <Text style={styles.calendarLoadingText}>Loading calendar...</Text>
+                  </View>
+                ) : (
+                  <CalendarList
+                    markedDates={{
+                      ...(customFromDate ? { [customFromDate]: { selected: true, selectedColor: "#10b981" } } : {}),
+                      ...(customToDate ? { [customToDate]: { selected: true, selectedColor: "#ef4444" } } : {}),
+                    }}
+                    pastScrollRange={12}
+                    futureScrollRange={12}
+                    scrollEnabled
+                    showScrollIndicator={false}
+                    theme={{
+                      backgroundColor: "#ffffff",
+                      calendarBackground: "#ffffff",
+                      textSectionTitleColor: "#64748b",
+                      selectedDayBackgroundColor: "#0f172a",
+                      selectedDayTextColor: "#ffffff",
+                      todayTextColor: "#3b82f6",
+                      dayTextColor: "#0f172a",
+                      textDisabledColor: "#cbd5e1",
+                      arrowColor: "#0f172a",
+                      monthTextColor: "#0f172a",
+                      textMonthFontWeight: "800",
+                      textDayFontWeight: "600",
+                    }}
+                    onDayPress={(day) => {
+                      if (isSelectingFromDate) {
+                        setCustomFromDate(day.dateString);
+                        // Auto-switch to end date selection
+                        setIsSelectingFromDate(false);
+                      } else {
+                        setCustomToDate(day.dateString);
+                      }
+                    }}
+                  />
+                )}
+              </View>
+
+              {/* ACTIONS - FIXED AT BOTTOM */}
+              <View style={styles.dateRangeActions}>
+                <TouchableOpacity
+                  activeOpacity={0.9}
+                  style={styles.dateRangeClearBtn}
+                  onPress={() => {
+                    setCustomFromDate("");
+                    setCustomToDate("");
+                    setIsSelectingFromDate(true);
+                  }}
+                >
+                  <Ionicons name="close-circle" size={18} color="#64748b" />
+                  <Text style={styles.dateRangeClearText}>Clear</Text>
                 </TouchableOpacity>
 
                 <TouchableOpacity
                   activeOpacity={0.9}
-                  style={styles.modalPrimary}
+                  style={[
+                    styles.dateRangeApplyBtn,
+                    (!customFromDate || !customToDate) && styles.dateRangeApplyBtnDisabled
+                  ]}
                   onPress={() => {
-                    if (!draftDate) return;
-                    const dt = parseYmd(draftDate);
-                    if (!dt) return;
-                    const midnight = new Date(dt.getFullYear(), dt.getMonth(), dt.getDate());
-                    LayoutAnimation.configureNext(LayoutAnimation.Presets.easeInEaseOut);
-                    setCustomDate(draftDate);
-                    setCustomDay(midnight);
-                    setIsCalendarOpen(false);
+                    if (customFromDate && customToDate) {
+                      setIsCalendarOpen(false);
+                    }
                   }}
+                  disabled={!customFromDate || !customToDate}
                 >
-                  <Text style={styles.modalPrimaryText}>Use date</Text>
+                  <Ionicons name="checkmark-circle" size={18} color="#fff" />
+                  <Text style={styles.dateRangeApplyText}>Apply</Text>
                 </TouchableOpacity>
               </View>
             </View>
@@ -432,108 +609,255 @@ import {
         </Animated.View>
 
         {/* LIST */}
-        <FlatList
-          data={filteredData}
-          keyExtractor={(item) => item.id}
-          showsVerticalScrollIndicator={false}
-          contentContainerStyle={{
-            paddingBottom: 110,
-          }}
-          renderItem={({ item }) => (
-            <TouchableOpacity
-              activeOpacity={0.8}
-              style={styles.card}
-              onPress={() => {
-                router.push(`/(drawer)/clients/${item.id}`);
-              }}
-            >
-              {/* TOP */}
-              <View style={styles.cardTop}>
-                <View style={styles.cardLeft}>
-                  <View style={styles.avatar}>
-                    <Text style={styles.avatarText}>
-                      {String(item.name || "?")
-                        .trim()
-                        .slice(0, 1)
-                        .toUpperCase()}
-                    </Text>
-                  </View>
-
-                  <View style={styles.primary}>
-                    <Text style={styles.name} numberOfLines={1}>
-                      {item.name}
-                    </Text>
-                    <Text style={styles.phone} numberOfLines={1}>
-                      {item.phone}
-                    </Text>
-                  </View>
-                </View>
-
-                <View style={styles.cardRight}>
-                  <View
-                    style={[
-                      styles.leadBadge,
-                      { backgroundColor: getLeadColor(item.lead) },
-                    ]}
-                  >
-                    <Text style={styles.leadText}>{item.lead}</Text>
-                  </View>
-
-                  <Ionicons name="chevron-forward" size={18} color="#94a3b8" />
-                </View>
-              </View>
-
-              {/* META */}
-              <View style={styles.metaRow}>
-                <View style={styles.metaChip}>
-                  <Ionicons name="location-outline" size={14} color="#64748b" />
-                  <Text style={styles.metaText} numberOfLines={1}>
-                    {item.location}
-                  </Text>
-                </View>
-
-                <View style={styles.metaChip}>
-                  <Ionicons
-                    name={item.type === "Incoming" ? "call-outline" : "return-down-forward-outline"}
-                    size={14}
-                    color="#64748b"
-                  />
-                  <Text style={styles.metaText} numberOfLines={1}>
-                    {item.type}
-                  </Text>
-                </View>
-
-                <View style={styles.metaChipGhost}>
-                  <Ionicons name="time-outline" size={14} color="#94a3b8" />
-                  <Text style={styles.metaTextGhost}>{item.date}</Text>
-                </View>
-              </View>
-
+        {isLoading ? (
+          <View style={styles.loadingContainer}>
+            <ActivityIndicator size="large" color="#3b82f6" />
+            <Text style={styles.loadingText}>Loading clients...</Text>
+          </View>
+        ) : filteredData.length === 0 ? (
+          <View style={styles.emptyContainer}>
+            <Ionicons 
+              name={searchQuery.trim() ? "search-outline" : "people-outline"} 
+              size={48} 
+              color="#cbd5e1" 
+            />
+            <Text style={styles.emptyTitle}>
+              {searchQuery.trim() ? "No results found" : "No clients yet"}
+            </Text>
+            <Text style={styles.emptySubtitle}>
+              {searchQuery.trim() 
+                ? `No clients match "${searchQuery}". Try a different search term.`
+                : "Start by adding your first client to get started."
+              }
+            </Text>
+            {searchQuery.trim() && (
               <TouchableOpacity
-                activeOpacity={0.9}
-                style={styles.bookBtn}
+                style={styles.clearSearchButton}
+                onPress={() => setSearchQuery("")}
+                activeOpacity={0.8}
+              >
+                <Text style={styles.clearSearchText}>Clear search</Text>
+              </TouchableOpacity>
+            )}
+          </View>
+        ) : (
+          <FlatList
+            data={filteredData}
+            keyExtractor={(item) => item.id}
+            showsVerticalScrollIndicator={false}
+            refreshControl={
+              <RefreshControl
+                refreshing={isRefreshing}
+                onRefresh={onRefresh}
+                colors={["#3b82f6"]}
+                tintColor="#3b82f6"
+              />
+            }
+            onEndReached={loadMore}
+            onEndReachedThreshold={0.5}
+            ListFooterComponent={() => {
+              if (isLoadingMore) {
+                return (
+                  <View style={styles.loadingMoreContainer}>
+                    <ActivityIndicator size="small" color="#3b82f6" />
+                    <Text style={styles.loadingMoreText}>Loading more...</Text>
+                  </View>
+                );
+              }
+              
+              // Show pagination info if available
+              if (pagination && clients.length > 0) {
+                const hasMore = pagination.current_page < pagination.last_page;
+                
+                if (hasMore) {
+                  return (
+                    <View style={styles.paginationInfoContainer}>
+                      <Text style={styles.paginationInfoText}>
+                        Page {pagination.current_page} of {pagination.last_page}
+                      </Text>
+                      <Text style={styles.paginationSubText}>
+                        Scroll down to load more
+                      </Text>
+                    </View>
+                  );
+                } else {
+                  return (
+                    <View style={styles.endMessageContainer}>
+                      <Text style={styles.endMessageText}>
+                        Showing all {pagination.total || clients.length} clients
+                      </Text>
+                    </View>
+                  );
+                }
+              }
+              
+              return null;
+            }}
+            contentContainerStyle={{
+              paddingBottom: 110,
+            }}
+            renderItem={({ item }) => (
+              <TouchableOpacity
+                activeOpacity={0.8}
+                style={styles.card}
                 onPress={() => {
-                  router.push({
-                    pathname: "/(drawer)/(tabs)/appointments",
-                    params: { openSheet: "1", name: item.name, phone: item.phone },
-                  });
+                  router.push(`/(drawer)/clients/${item.id}`);
                 }}
               >
-                <Ionicons name="calendar-outline" size={16} color="#0f172a" />
-                <Text style={styles.bookBtnText}>Book Appointment</Text>
+                {/* TOP */}
+                <View style={styles.cardTop}>
+                  <View style={styles.cardLeft}>
+                    <View style={styles.avatar}>
+                      <Text style={styles.avatarText}>
+                        {String(item.fullname || "?")
+                          .trim()
+                          .slice(0, 1)
+                          .toUpperCase()}
+                      </Text>
+                    </View>
+
+                    <View style={styles.primary}>
+                      <Text style={styles.name} numberOfLines={1}>
+                        {item.fullname}
+                      </Text>
+                      <Text style={styles.phone} numberOfLines={1}>
+                        {item.phone}
+                      </Text>
+                    </View>
+                  </View>
+
+                  <View style={styles.cardRight}>
+                    <View
+                      style={[
+                        styles.leadBadge,
+                        { backgroundColor: getLeadColor(item.lead_type) },
+                      ]}
+                    >
+                      <Text style={styles.leadText}>{item.lead_type}</Text>
+                    </View>
+
+                    <Ionicons name="chevron-forward" size={18} color="#94a3b8" />
+                  </View>
+                </View>
+
+                {/* META */}
+                <View style={styles.metaRow}>
+                  <View style={styles.metaChip}>
+                    <Ionicons name="location-outline" size={14} color="#64748b" />
+                    <Text style={styles.metaText} numberOfLines={1}>
+                      {item.location}
+                    </Text>
+                  </View>
+
+                  <View style={styles.metaChip}>
+                    <Ionicons
+                      name={item.call_type === "incoming" ? "call-outline" : "return-down-forward-outline"}
+                      size={14}
+                      color="#64748b"
+                    />
+                    <Text style={styles.metaText} numberOfLines={1}>
+                      {item.call_type}
+                    </Text>
+                  </View>
+
+                  <View style={styles.metaChipGhost}>
+                    <Ionicons name="time-outline" size={14} color="#94a3b8" />
+                    <Text style={styles.metaTextGhost}>
+                      {item.created_date || 'No date'}
+                    </Text>
+                  </View>
+                </View>
+
+                <TouchableOpacity
+                  activeOpacity={0.9}
+                  style={styles.bookBtn}
+                  onPress={() => {
+                    setSelectedClient({
+                      name: item.fullname,
+                      phone: item.phone,
+                      id: item.id,
+                      location: item.location,
+                      case_type: item.case_type || "",
+                      referance: item.referance || "",
+                    });
+                    addAppointmentSheetRef.current?.snapToIndex(0);
+                  }}
+                >
+                  <Ionicons name="calendar-outline" size={16} color="#0f172a" />
+                  <Text style={styles.bookBtnText}>Book Appointment</Text>
+                </TouchableOpacity>
               </TouchableOpacity>
-            </TouchableOpacity>
-          )}
+            )}
+          />
+        )}
+
+        {/* Add Appointment Sheet */}
+        <AddAppointmentSheet
+          ref={addAppointmentSheetRef}
+          prefill={selectedClient}
+          onSave={handleAppointmentSaved}
         />
       </View>
     );
   }
-  
-  const styles = StyleSheet.create({
+
+const styles = StyleSheet.create({
     container: {
       flex: 1,
       backgroundColor: "#f8fafc",
       paddingHorizontal: 20,
+    },
+
+    loadingContainer: {
+      flex: 1,
+      justifyContent: "center",
+      alignItems: "center",
+      paddingVertical: 60,
+    },
+
+    loadingText: {
+      marginTop: 12,
+      fontSize: 14,
+      color: "#64748b",
+      fontWeight: "600",
+    },
+
+    emptyContainer: {
+      flex: 1,
+      justifyContent: "center",
+      alignItems: "center",
+      paddingVertical: 60,
+      paddingHorizontal: 20,
+    },
+
+    emptyTitle: {
+      fontSize: 18,
+      fontWeight: "900",
+      color: "#0f172a",
+      marginTop: 16,
+      marginBottom: 8,
+    },
+
+    emptySubtitle: {
+      fontSize: 14,
+      color: "#64748b",
+      fontWeight: "600",
+      textAlign: "center",
+      lineHeight: 20,
+    },
+
+    clearSearchButton: {
+      marginTop: 20,
+      paddingHorizontal: 20,
+      paddingVertical: 12,
+      backgroundColor: "#3b82f6",
+      borderRadius: 12,
+    },
+
+    clearSearchText: {
+      color: "#fff",
+      fontWeight: "700",
+      fontSize: 14,
     },
   
     header: {
@@ -571,6 +895,16 @@ import {
       fontSize: 15,
       color: "#0f172a",
       fontWeight: "600",
+    },
+
+    searchClear: {
+      height: 28,
+      width: 28,
+      borderRadius: 14,
+      alignItems: "center",
+      justifyContent: "center",
+      backgroundColor: "#f1f5f9",
+      marginRight: 8,
     },
 
     searchAction: {
@@ -642,87 +976,201 @@ import {
       color: "#fff",
     },
 
-    customRangeBox: {
+    customRangeTrigger: {
       backgroundColor: "#ffffff",
       borderWidth: 1,
       borderColor: "#e2e8f0",
-      borderRadius: 18,
-      padding: 12,
+      borderRadius: 16,
+      padding: 16,
       marginBottom: 12,
     },
 
-    rangePickRow: {
-      height: 48,
-      borderRadius: 16,
-      backgroundColor: "#f8fafc",
-      borderWidth: 1,
-      borderColor: "#e2e8f0",
-      paddingHorizontal: 12,
+    customRangeContent: {
+      flexDirection: "row",
+      alignItems: "center",
+      gap: 12,
+    },
+
+    customRangeLabel: {
+      fontSize: 13,
+      fontWeight: "700",
+      color: "#0f172a",
+      marginBottom: 4,
+    },
+
+    customRangeValue: {
+      fontSize: 14,
+      fontWeight: "600",
+      color: "#64748b",
+    },
+
+    dateRangeSheet: {
+      position: "absolute",
+      bottom: 0,
+      left: 0,
+      right: 0,
+      backgroundColor: "#ffffff",
+      borderTopLeftRadius: 24,
+      borderTopRightRadius: 24,
+      maxHeight: "85%",
+      overflow: "hidden",
+    },
+
+    dateRangeHeader: {
       flexDirection: "row",
       alignItems: "center",
       justifyContent: "space-between",
+      paddingHorizontal: 20,
+      paddingTop: 20,
+      paddingBottom: 16,
+      borderBottomWidth: 1,
+      borderBottomColor: "#f1f5f9",
     },
 
-    rangePickLeft: {
-      flexDirection: "row",
-      alignItems: "center",
-      gap: 10,
-      flex: 1,
-      minWidth: 0,
-      paddingRight: 10,
-    },
-
-    rangePickTitle: {
+    dateRangeTitle: {
+      fontSize: 20,
+      fontWeight: "900",
       color: "#0f172a",
-      fontWeight: "900",
+    },
+
+    dateRangeSubtitle: {
       fontSize: 13,
-    },
-
-    rangePickValue: {
+      fontWeight: "600",
       color: "#64748b",
-      fontWeight: "700",
-      fontSize: 12.5,
-      marginTop: 2,
+      marginTop: 4,
     },
 
-    customActions: {
-      marginTop: 10,
+    datePickersContainer: {
       flexDirection: "row",
-      gap: 10,
+      gap: 12,
+      paddingHorizontal: 20,
+      paddingVertical: 16,
     },
 
-    customPrimary: {
+    datePickerBox: {
       flex: 1,
-      height: 44,
-      borderRadius: 14,
-      backgroundColor: "#0f172a",
+      backgroundColor: "#f8fafc",
+      borderWidth: 2,
+      borderColor: "#e2e8f0",
+      borderRadius: 12,
+      padding: 12,
+    },
+
+    datePickerBoxActive: {
+      backgroundColor: "#eff6ff",
+      borderColor: "#3b82f6",
+      borderWidth: 2,
+    },
+
+    datePickerLabel: {
+      flexDirection: "row",
       alignItems: "center",
-      justifyContent: "center",
-      flexDirection: "row",
-      gap: 8,
+      gap: 6,
+      marginBottom: 8,
+      flexWrap: "wrap",
     },
 
-    customPrimaryText: {
-      color: "#fff",
-      fontWeight: "900",
+    datePickerLabelText: {
+      fontSize: 12,
+      fontWeight: "700",
+      color: "#64748b",
     },
 
-    customGhost: {
+    activeIndicator: {
+      backgroundColor: "#3b82f6",
+      paddingHorizontal: 8,
+      paddingVertical: 2,
+      borderRadius: 8,
+      marginLeft: "auto",
+    },
+
+    activeIndicatorText: {
+      fontSize: 10,
+      fontWeight: "800",
+      color: "#ffffff",
+      textTransform: "uppercase",
+    },
+
+    datePickerValue: {
+      fontSize: 14,
+      fontWeight: "800",
+      color: "#0f172a",
+    },
+
+    datePickerPlaceholder: {
+      color: "#94a3b8",
+      fontWeight: "600",
+    },
+
+    calendarContainer: {
       flex: 1,
-      height: 44,
+      maxHeight: 350,
+      minHeight: 300,
+    },
+
+    calendarLoadingContainer: {
+      flex: 1,
+      justifyContent: "center",
+      alignItems: "center",
+      paddingVertical: 80,
+    },
+
+    calendarLoadingText: {
+      marginTop: 12,
+      fontSize: 14,
+      color: "#64748b",
+      fontWeight: "600",
+    },
+
+    dateRangeActions: {
+      flexDirection: "row",
+      gap: 12,
+      paddingHorizontal: 20,
+      paddingVertical: 16,
+      paddingBottom: 20,
+      backgroundColor: "#ffffff",
+      borderTopWidth: 1,
+      borderTopColor: "#f1f5f9",
+    },
+
+    dateRangeClearBtn: {
+      flex: 1,
+      height: 48,
       borderRadius: 14,
       backgroundColor: "#f1f5f9",
       borderWidth: 1,
       borderColor: "#e2e8f0",
+      flexDirection: "row",
       alignItems: "center",
       justifyContent: "center",
-      flexDirection: "row",
       gap: 8,
     },
 
-    customGhostText: {
-      color: "#334155",
-      fontWeight: "900",
+    dateRangeClearText: {
+      fontSize: 15,
+      fontWeight: "800",
+      color: "#64748b",
+    },
+
+    dateRangeApplyBtn: {
+      flex: 1,
+      height: 48,
+      borderRadius: 14,
+      backgroundColor: "#0f172a",
+      flexDirection: "row",
+      alignItems: "center",
+      justifyContent: "center",
+      gap: 8,
+    },
+
+    dateRangeApplyBtnDisabled: {
+      backgroundColor: "#cbd5e1",
+    },
+
+    dateRangeApplyText: {
+      fontSize: 15,
+      fontWeight: "800",
+      color: "#ffffff",
     },
 
     modalBackdrop: {
@@ -952,5 +1400,48 @@ import {
     bookBtnText: {
       color: "#0f172a",
       fontWeight: "900",
+    },
+
+    loadingMoreContainer: {
+      paddingVertical: 20,
+      alignItems: "center",
+      justifyContent: "center",
+      flexDirection: "row",
+      gap: 10,
+    },
+
+    loadingMoreText: {
+      fontSize: 14,
+      color: "#64748b",
+      fontWeight: "600",
+    },
+
+    endMessageContainer: {
+      paddingVertical: 20,
+      alignItems: "center",
+    },
+
+    endMessageText: {
+      fontSize: 14,
+      color: "#94a3b8",
+      fontWeight: "600",
+    },
+
+    paginationInfoContainer: {
+      paddingVertical: 20,
+      alignItems: "center",
+      gap: 4,
+    },
+
+    paginationInfoText: {
+      fontSize: 14,
+      color: "#3b82f6",
+      fontWeight: "700",
+    },
+
+    paginationSubText: {
+      fontSize: 12,
+      color: "#94a3b8",
+      fontWeight: "600",
     },
   });

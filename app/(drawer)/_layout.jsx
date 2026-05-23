@@ -8,6 +8,7 @@ import {
   StyleSheet,
   Text,
   View,
+  TouchableOpacity,
 } from "react-native";
 import {
   SafeAreaView,
@@ -17,9 +18,26 @@ import Animated, {
   FadeInLeft,
   FadeInDown,
 } from "react-native-reanimated";
+import { router } from "expo-router";
+import { logout } from "../../services/api/authService";
+import { showSuccessToast, showErrorToast } from "../../utils/toast";
 
 function CustomDrawerContent(props) {
   const insets = useSafeAreaInsets();
+
+  const handleLogout = async () => {
+    try {
+      const result = await logout();
+      if (result.success) {
+        showSuccessToast(result.message);
+        router.replace("/(auth)/login");
+      } else {
+        showErrorToast(result.message);
+      }
+    } catch (error) {
+      showErrorToast("Error during logout");
+    }
+  };
 
   return (
     <SafeAreaView
@@ -40,7 +58,7 @@ function CustomDrawerContent(props) {
           entering={FadeInDown.duration(600)}
           style={styles.headerSection}
         >
-          <View style={styles.logoBox}>
+          {/* <View style={styles.logoBox}>
             <View style={styles.logoCircle}>
               <Ionicons
                 name="briefcase-outline"
@@ -48,7 +66,7 @@ function CustomDrawerContent(props) {
                 color="#3b82f6"
               />
             </View>
-          </View>
+          </View> */}
 
           <Animated.View
             style={styles.brandText}
@@ -88,6 +106,15 @@ function CustomDrawerContent(props) {
               </Text>
             </View>
           </View>
+
+          <TouchableOpacity
+            style={styles.logoutButton}
+            onPress={handleLogout}
+            activeOpacity={0.7}
+          >
+            <Ionicons name="log-out-outline" size={20} color="#ef4444" />
+            <Text style={styles.logoutText}>Logout</Text>
+          </TouchableOpacity>
 
           <Text style={styles.footerVersion}>FirstApp v1.0.0</Text>
         </Animated.View>
@@ -232,6 +259,15 @@ export default function DrawerLayout() {
         }}
       />
 
+      {/* HIDDEN SCREENS - Not shown in drawer */}
+      <Drawer.Screen
+        name="reports"
+        options={{
+          drawerItemStyle: { display: "none" },
+          title: "Reports",
+        }}
+      />
+
       {/* HIDDEN DETAIL SCREENS - Not shown in drawer */}
       <Drawer.Screen
         name="appointments/[id]"
@@ -360,6 +396,25 @@ const styles = StyleSheet.create({
     color: "#94a3b8",
     fontWeight: "500",
     marginTop: 2,
+  },
+
+  logoutButton: {
+    flexDirection: "row",
+    alignItems: "center",
+    gap: 10,
+    paddingVertical: 12,
+    paddingHorizontal: 16,
+    borderRadius: 12,
+    backgroundColor: "#fef2f2",
+    borderWidth: 1,
+    borderColor: "#fecaca",
+    marginBottom: 14,
+  },
+
+  logoutText: {
+    fontSize: 14,
+    fontWeight: "700",
+    color: "#ef4444",
   },
 
   footerVersion: {

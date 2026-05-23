@@ -8,6 +8,8 @@ import {
   Dimensions,
   KeyboardAvoidingView,
   Platform,
+  ActivityIndicator,
+  Image,
 } from "react-native";
 
 import { router } from "expo-router";
@@ -21,14 +23,17 @@ import Animated, {
   withSpring,
 } from "react-native-reanimated";
 import { useEffect, useState } from "react";
+import { adminLogin } from "../../services/api/authService";
+import { showSuccessToast, showErrorToast } from "../../utils/toast";
 
 const { height } = Dimensions.get("window");
 
 export default function LoginScreen() {
-  const [email, setEmail] = useState("");
+  const [login, setLogin] = useState("");
   const [password, setPassword] = useState("");
   const [showPassword, setShowPassword] = useState(false);
   const [isLoading, setIsLoading] = useState(false);
+  const [errors, setErrors] = useState({});
 
   const logoScale = useSharedValue(0.8);
   const formOpacity = useSharedValue(0);
@@ -46,11 +51,59 @@ export default function LoginScreen() {
     opacity: formOpacity.value,
   }));
 
-  const handleLogin = () => {
+  const validateForm = () => {
+    const newErrors = {};
+    
+    if (!login.trim()) {
+      newErrors.login = "Username or email is required";
+    }
+    
+    if (!password) {
+      newErrors.password = "Password is required";
+    } else if (password.length < 6) {
+      newErrors.password = "Password must be at least 6 characters";
+    }
+    
+    setErrors(newErrors);
+    return Object.keys(newErrors).length === 0;
+  };
+
+  const handleLogin = async () => {
+    // Clear previous errors
+    setErrors({});
+    
+    // Validate form
+    if (!validateForm()) {
+      showErrorToast("Please fill in all required fields");
+      return;
+    }
+
     setIsLoading(true);
-    setTimeout(() => {
-      router.replace("/(drawer)/punch");
-    }, 800);
+
+    try {
+      const result = await adminLogin(login, password);
+
+      if (result.success) {
+        // Show success message
+        showSuccessToast(result.message || "Login successful!");
+        
+        // Navigate to main app immediately (token is already stored in adminLogin)
+        router.replace("/(drawer)/punch");
+      } else {
+        // Handle validation errors
+        if (result.validationErrors && Object.keys(result.validationErrors).length > 0) {
+          setErrors(result.validationErrors);
+          const firstError = Object.values(result.validationErrors)[0];
+          showErrorToast(Array.isArray(firstError) ? firstError[0] : firstError);
+        } else {
+          showErrorToast(result.message || "Login failed");
+        }
+      }
+    } catch (error) {
+      showErrorToast("An unexpected error occurred. Please try again.");
+    } finally {
+      setIsLoading(false);
+    }
   };
 
   return (
@@ -74,11 +127,12 @@ export default function LoginScreen() {
           style={[styles.logoSection, logoAnimatedStyle]}
           entering={FadeInDown.duration(800)}
         >
-          <View style={styles.logoCircle}>
-            <Ionicons name="briefcase-outline" size={48} color="#fff" />
-          </View>
-          <Text style={styles.appName}>DISHA</Text>
-          <Text style={styles.tagline}>Law Firm CRM</Text>
+          <Image
+            source={require("../../assets/images/Disha_NewLogo.png")}
+            style={styles.logo}
+            resizeMode="contain"
+          />
+            <Text style={styles.tagline}>Employee-Login</Text>
         </Animated.View>
 
         {/* Form Section */}
@@ -86,34 +140,48 @@ export default function LoginScreen() {
           style={[styles.formSection, formAnimatedStyle]}
           entering={FadeInUp.duration(1000).delay(200)}
         >
-          {/* Email Input */}
+          {/* Email/Username Input */}
           <View style={styles.inputWrapper}>
-            <View style={styles.inputContainer}>
+            <View style={[
+              styles.inputContainer,
+              errors.login && styles.inputError
+            ]}>
               <Ionicons
-                name="mail-outline"
+                name="person-outline"
                 size={20}
-                color="#64748b"
+                color={errors.login ? "#ef4444" : "#64748b"}
                 style={styles.inputIcon}
               />
               <TextInput
-                placeholder="Email Address"
+                placeholder="Username or Email"
                 placeholderTextColor="#94a3b8"
                 style={styles.input}
-                value={email}
-                onChangeText={setEmail}
-                keyboardType="email-address"
+                value={login}
+                onChangeText={(text) => {
+                  setLogin(text);
+                  if (errors.login) {
+                    setErrors({ ...errors, login: null });
+                  }
+                }}
+                autoCapitalize="none"
                 editable={!isLoading}
               />
             </View>
+            {errors.login && (
+              <Text style={styles.errorText}>{errors.login}</Text>
+            )}
           </View>
 
           {/* Password Input */}
           <View style={styles.inputWrapper}>
-            <View style={styles.inputContainer}>
+            <View style={[
+              styles.inputContainer,
+              errors.password && styles.inputError
+            ]}>
               <Ionicons
                 name="lock-closed-outline"
                 size={20}
-                color="#64748b"
+                color={errors.password ? "#ef4444" : "#64748b"}
                 style={styles.inputIcon}
               />
               <TextInput
@@ -121,13 +189,19 @@ export default function LoginScreen() {
                 placeholderTextColor="#94a3b8"
                 style={styles.input}
                 value={password}
-                onChangeText={setPassword}
+                onChangeText={(text) => {
+                  setPassword(text);
+                  if (errors.password) {
+                    setErrors({ ...errors, password: null });
+                  }
+                }}
                 secureTextEntry={!showPassword}
                 editable={!isLoading}
               />
               <TouchableOpacity
                 onPress={() => setShowPassword(!showPassword)}
                 style={styles.eyeIcon}
+                disabled={isLoading}
               >
                 <Ionicons
                   name={showPassword ? "eye-outline" : "eye-off-outline"}
@@ -136,12 +210,18 @@ export default function LoginScreen() {
                 />
               </TouchableOpacity>
             </View>
+            {errors.password && (
+              <Text style={styles.errorText}>{errors.password}</Text>
+            )}
           </View>
 
           {/* Forgot Password */}
-          <TouchableOpacity style={styles.forgotPasswordContainer}>
+          {/* <TouchableOpacity 
+            style={styles.forgotPasswordContainer}
+            disabled={isLoading}
+          >
             <Text style={styles.forgotPasswordText}>Forgot Password?</Text>
-          </TouchableOpacity>
+          </TouchableOpacity> */}
 
           {/* Login Button */}
           <TouchableOpacity
@@ -157,22 +237,7 @@ export default function LoginScreen() {
               style={styles.buttonGradient}
             >
               {isLoading ? (
-                <View style={styles.loadingContainer}>
-                  <Animated.View
-                    style={[
-                      styles.spinner,
-                      {
-                        transform: [
-                          {
-                            rotate: isLoading ? "360deg" : "0deg",
-                          },
-                        ],
-                      },
-                    ]}
-                  >
-                    <Ionicons name="sync" size={20} color="#fff" />
-                  </Animated.View>
-                </View>
+                <ActivityIndicator size="small" color="#fff" />
               ) : (
                 <Text style={styles.loginButtonText}>Sign In</Text>
               )}
@@ -180,32 +245,32 @@ export default function LoginScreen() {
           </TouchableOpacity>
 
           {/* Divider */}
-          <View style={styles.dividerContainer}>
+          {/* <View style={styles.dividerContainer}>
             <View style={styles.divider} />
             <Text style={styles.dividerText}>or continue with</Text>
             <View style={styles.divider} />
-          </View>
+          </View> */}
 
           {/* Social Login */}
-          <View style={styles.socialContainer}>
-            <TouchableOpacity style={styles.socialButton}>
+          {/* <View style={styles.socialContainer}>
+            <TouchableOpacity style={styles.socialButton} disabled={isLoading}>
               <Ionicons name="logo-google" size={24} color="#ea4335" />
             </TouchableOpacity>
-            <TouchableOpacity style={styles.socialButton}>
+            <TouchableOpacity style={styles.socialButton} disabled={isLoading}>
               <Ionicons name="logo-apple" size={24} color="#000" />
             </TouchableOpacity>
-            <TouchableOpacity style={styles.socialButton}>
+            <TouchableOpacity style={styles.socialButton} disabled={isLoading}>
               <Ionicons name="logo-microsoft" size={24} color="#00a4ef" />
             </TouchableOpacity>
-          </View>
+          </View> */}
 
           {/* Sign Up Link */}
-          <View style={styles.signupContainer}>
+          {/* <View style={styles.signupContainer}>
             <Text style={styles.signupText}>Don't have an account? </Text>
-            <TouchableOpacity>
+            <TouchableOpacity disabled={isLoading}>
               <Text style={styles.signupLink}>Sign Up</Text>
             </TouchableOpacity>
-          </View>
+          </View> */}
         </Animated.View>
       </LinearGradient>
     </KeyboardAvoidingView>
@@ -221,14 +286,14 @@ const styles = StyleSheet.create({
     flex: 1,
     justifyContent: "space-between",
     paddingHorizontal: 24,
-    paddingTop: 60,
-    paddingBottom: 40,
+    paddingTop: 100,
+    paddingBottom: 30,
   },
 
   decorativeCircle1: {
     position: "absolute",
     width: 300,
-    height: 300,
+    height: 500,
     borderRadius: 150,
     backgroundColor: "rgba(59, 130, 246, 0.1)",
     top: -100,
@@ -250,29 +315,15 @@ const styles = StyleSheet.create({
     marginBottom: 60,
   },
 
-  logoCircle: {
-    width: 80,
-    height: 80,
-    borderRadius: 40,
-    backgroundColor: "rgba(59, 130, 246, 0.2)",
-    justifyContent: "center",
-    alignItems: "center",
+  logo: {
+    width: 200,
+    height: 120,
     marginBottom: 16,
-    borderWidth: 2,
-    borderColor: "rgba(59, 130, 246, 0.4)",
-  },
-
-  appName: {
-    fontSize: 32,
-    fontWeight: "800",
-    color: "#fff",
-    letterSpacing: 2,
-    marginBottom: 4,
   },
 
   tagline: {
-    fontSize: 14,
-    color: "#94a3b8",
+    fontSize: 20,
+    color: "#ecc209ff",
     fontWeight: "500",
     letterSpacing: 0.5,
   },
@@ -295,6 +346,19 @@ const styles = StyleSheet.create({
     borderColor: "rgba(255, 255, 255, 0.15)",
     paddingHorizontal: 16,
     height: 56,
+  },
+
+  inputError: {
+    borderColor: "#ef4444",
+    borderWidth: 2,
+  },
+
+  errorText: {
+    color: "#ef4444",
+    fontSize: 12,
+    fontWeight: "600",
+    marginTop: 6,
+    marginLeft: 4,
   },
 
   inputIcon: {
@@ -346,15 +410,6 @@ const styles = StyleSheet.create({
     fontSize: 16,
     fontWeight: "700",
     letterSpacing: 0.5,
-  },
-
-  loadingContainer: {
-    justifyContent: "center",
-    alignItems: "center",
-  },
-
-  spinner: {
-    animation: "spin 1s linear infinite",
   },
 
   dividerContainer: {

@@ -6,6 +6,7 @@ import {
   Text,
   TouchableOpacity,
   View,
+  ActivityIndicator,
 } from "react-native";
 import { useSafeAreaInsets } from "react-native-safe-area-context";
 import { LinearGradient } from "expo-linear-gradient";
@@ -16,17 +17,154 @@ import Animated, {
   useSharedValue,
   withSpring,
 } from "react-native-reanimated";
+import { router, useFocusEffect } from "expo-router";
+import { useCallback } from "react";
+import AsyncStorage from "@react-native-async-storage/async-storage";
+import * as Location from "expo-location";
+import { markAttendance, getAttendanceDetails } from "../../services/api/attendanceService";
+import { showSuccessToast, showErrorToast } from "../../utils/toast";
 
 export default function PunchScreen() {
   const insets = useSafeAreaInsets();
   const [isPunchedIn, setIsPunchedIn] = useState(false);
   const [punchInTime, setPunchInTime] = useState(null);
   const [punchOutTime, setPunchOutTime] = useState(null);
-  const [location, setLocation] = useState(null);
   const [isLoading, setIsLoading] = useState(false);
   const [currentTime, setCurrentTime] = useState(new Date());
+  const [attendanceData, setAttendanceData] = useState(null);
+  const [isAuthenticated, setIsAuthenticated] = useState(false);
+  const [isCheckingAuth, setIsCheckingAuth] = useState(true);
+  const [isLoadingStatus, setIsLoadingStatus] = useState(true);
+  const [todayAttendance, setTodayAttendance] = useState(null);
+  const [locationPermission, setLocationPermission] = useState(null);
 
   const punchButtonScale = useSharedValue(1);
+
+  // Request location permissions on mount
+  useEffect(() => {
+    requestLocationPermission();
+  }, []);
+
+  const requestLocationPermission = async () => {
+    try {
+      const { status } = await Location.requestForegroundPermissionsAsync();
+      setLocationPermission(status === 'granted');
+      
+      if (status !== 'granted') {
+        showErrorToast('Location permission is required for attendance tracking');
+      }
+    } catch (error) {
+      showErrorToast('Failed to request location permission');
+      setLocationPermission(false);
+    }
+  };
+
+  // Check authentication status on mount
+  useEffect(() => {
+    checkAuthStatus();
+  }, []);
+
+  // Recheck auth when screen comes into focus
+  useFocusEffect(
+    useCallback(() => {
+      checkAuthStatus();
+    }, [])
+  );
+
+  const checkAuthStatus = async () => {
+    try {
+      // Small delay to ensure AsyncStorage is ready
+      await new Promise(resolve => setTimeout(resolve, 100));
+      
+      const token = await AsyncStorage.getItem('authToken');
+      setIsAuthenticated(!!token);
+      
+      if (!token) {
+        // No auth token found - user needs to login
+      } else {
+        // Auth token found - user is authenticated
+        
+        // If authenticated, fetch current attendance status
+        await fetchAttendanceStatus();
+      }
+    } catch (error) {
+      setIsAuthenticated(false);
+    } finally {
+      setIsCheckingAuth(false);
+    }
+  };
+
+  const fetchAttendanceStatus = async () => {
+    try {
+      setIsLoadingStatus(true);
+      
+      const result = await getAttendanceDetails();
+      
+      if (result.success && result.data?.attendance) {
+        const attendance = result.data.attendance;
+        
+        setTodayAttendance(attendance);
+        
+        // Check if user is currently punched in
+        const hasPunchIn = attendance.punch_in_time && !attendance.punch_out_time;
+        const hasPunchOut = attendance.punch_in_time && attendance.punch_out_time;
+        
+        setIsPunchedIn(hasPunchIn);
+        
+        // Set punch times if available
+        if (attendance.punch_in_time) {
+          const punchInDate = new Date(attendance.punch_in_time);
+          if (!isNaN(punchInDate.getTime())) {
+            setPunchInTime({
+              type: "PUNCH_IN",
+              time: punchInDate.toLocaleTimeString("en-US", {
+                hour: "2-digit",
+                minute: "2-digit",
+                second: "2-digit",
+                hour12: true,
+              }),
+              timestamp: attendance.punch_in_time,
+              address: attendance.punch_in_location?.address || "Location not available",
+              date: punchInDate.toLocaleDateString(),
+            });
+          }
+        }
+        
+        if (attendance.punch_out_time) {
+          const punchOutDate = new Date(attendance.punch_out_time);
+          if (!isNaN(punchOutDate.getTime())) {
+            setPunchOutTime({
+              type: "PUNCH_OUT",
+              time: punchOutDate.toLocaleTimeString("en-US", {
+                hour: "2-digit",
+                minute: "2-digit",
+                second: "2-digit",
+                hour12: true,
+              }),
+              timestamp: attendance.punch_out_time,
+              address: attendance.punch_out_location?.address || "Location not available",
+              date: punchOutDate.toLocaleDateString(),
+              duration: attendance.total_duration || calculateDuration(attendance.punch_in_time, attendance.punch_out_time),
+            });
+          }
+        }
+        
+        setAttendanceData(attendance);
+        
+      } else {
+        // No attendance data found for today
+        // Reset states if no attendance data
+        setIsPunchedIn(false);
+        setPunchInTime(null);
+        setPunchOutTime(null);
+        setTodayAttendance(null);
+      }
+    } catch (error) {
+      showErrorToast("Failed to load attendance status");
+    } finally {
+      setIsLoadingStatus(false);
+    }
+  };
 
   // Update current time every second
   useEffect(() => {
@@ -36,16 +174,70 @@ export default function PunchScreen() {
     return () => clearInterval(timer);
   }, []);
 
-  // Mock location data (replace with real location when expo-location is installed)
-  const getMockLocation = () => {
-    return {
-      latitude: 28.6139 + (Math.random() - 0.5) * 0.01,
-      longitude: 77.209 + (Math.random() - 0.5) * 0.01,
-      accuracy: Math.floor(Math.random() * 10) + 5,
-    };
+  // Get real location from device GPS
+  const getRealLocation = async () => {
+    try {
+      // Check if permission is granted
+      const { status } = await Location.getForegroundPermissionsAsync();
+      
+      if (status !== 'granted') {
+        showErrorToast('Location permission denied. Please enable location access.');
+        return null;
+      }
+
+      // Get current position with high accuracy
+      const location = await Location.getCurrentPositionAsync({
+        accuracy: Location.Accuracy.High,
+      });
+
+      // Get address from coordinates (reverse geocoding)
+      let address = "Location retrieved";
+      try {
+        const reverseGeocode = await Location.reverseGeocodeAsync({
+          latitude: location.coords.latitude,
+          longitude: location.coords.longitude,
+        });
+
+        if (reverseGeocode && reverseGeocode.length > 0) {
+          const addr = reverseGeocode[0];
+          address = [
+            addr.name,
+            addr.street,
+            addr.city,
+            addr.region,
+            addr.country
+          ].filter(Boolean).join(', ');
+        }
+      } catch (geoError) {
+        // If reverse geocoding fails, use coordinates as address
+        address = `${location.coords.latitude.toFixed(6)}, ${location.coords.longitude.toFixed(6)}`;
+      }
+
+      return {
+        latitude: location.coords.latitude,
+        longitude: location.coords.longitude,
+        accuracy: location.coords.accuracy,
+        address: address,
+      };
+    } catch (error) {
+      showErrorToast('Failed to get location. Please check your GPS settings.');
+      return null;
+    }
   };
 
   const handlePunchIn = async () => {
+    // Prevent multiple punch-ins
+    if (isPunchedIn) {
+      showErrorToast("You are already punched in for today");
+      return;
+    }
+
+    // Check if user has already punched out today
+    if (todayAttendance?.punch_out_time) {
+      showErrorToast("You have already completed attendance for today");
+      return;
+    }
+
     setIsLoading(true);
     punchButtonScale.value = withSpring(0.95, { damping: 8 });
     setTimeout(() => {
@@ -53,40 +245,80 @@ export default function PunchScreen() {
     }, 100);
 
     try {
-      const loc = getMockLocation();
+      // Check if user is authenticated
+      const token = await AsyncStorage.getItem('authToken');
+      if (!token) {
+        showErrorToast("Please login first to punch in");
+        router.push("/(auth)/login");
+        return;
+      }
 
-      const now = new Date();
-      const punchData = {
-        type: "PUNCH_IN",
-        time: now.toLocaleTimeString("en-US", {
-          hour: "2-digit",
-          minute: "2-digit",
-          second: "2-digit",
-          hour12: true,
-        }),
-        timestamp: now.toISOString(),
-        latitude: loc.latitude,
-        longitude: loc.longitude,
-        accuracy: loc.accuracy,
-        date: now.toLocaleDateString(),
-      };
+      const loc = await getRealLocation();
+      
+      if (!loc) {
+        showErrorToast("Unable to get location. Please enable GPS and try again.");
+        setIsLoading(false);
+        return;
+      }
 
-      // Console log the punch in data
-      console.log("=== PUNCH IN DATA ===");
-      console.log(JSON.stringify(punchData, null, 2));
-      console.log("====================");
+      // Call API
+      const result = await markAttendance(
+        loc.latitude,
+        loc.longitude,
+        loc.address,
+        "punch_in"
+      );
 
-      setPunchInTime(punchData);
-      setLocation(loc);
-      setIsPunchedIn(true);
+      if (result.success) {
+        const now = new Date();
+        const punchData = {
+          type: "PUNCH_IN",
+          time: now.toLocaleTimeString("en-US", {
+            hour: "2-digit",
+            minute: "2-digit",
+            second: "2-digit",
+            hour12: true,
+          }),
+          timestamp: now.toISOString(),
+          latitude: loc.latitude,
+          longitude: loc.longitude,
+          accuracy: loc.accuracy,
+          address: loc.address,
+          date: now.toLocaleDateString(),
+        };
+
+        setPunchInTime(punchData);
+        setAttendanceData(result.data.data);
+        setIsPunchedIn(true);
+        setPunchOutTime(null); // Reset punch out time
+        
+        showSuccessToast(result.message || "Punched in successfully!");
+        
+        // Refresh attendance status to get updated data
+        await fetchAttendanceStatus();
+      } else {
+        showErrorToast(result.message || "Failed to punch in");
+      }
     } catch (error) {
-      console.error("Punch in error:", error);
+      showErrorToast("An unexpected error occurred. Please try again.");
     } finally {
       setIsLoading(false);
     }
   };
 
   const handlePunchOut = async () => {
+    // Prevent punch out if not punched in
+    if (!isPunchedIn) {
+      showErrorToast("You need to punch in first");
+      return;
+    }
+
+    // Check if already punched out
+    if (todayAttendance?.punch_out_time) {
+      showErrorToast("You have already punched out for today");
+      return;
+    }
+
     setIsLoading(true);
     punchButtonScale.value = withSpring(0.95, { damping: 8 });
     setTimeout(() => {
@@ -94,35 +326,66 @@ export default function PunchScreen() {
     }, 100);
 
     try {
-      const loc = getMockLocation();
+      // Check if user is authenticated
+      const token = await AsyncStorage.getItem('authToken');
+      if (!token) {
+        showErrorToast("Please login first to punch out");
+        router.push("/(auth)/login");
+        return;
+      }
 
-      const now = new Date();
-      const punchOutData = {
-        type: "PUNCH_OUT",
-        time: now.toLocaleTimeString("en-US", {
-          hour: "2-digit",
-          minute: "2-digit",
-          second: "2-digit",
-          hour12: true,
-        }),
-        timestamp: now.toISOString(),
-        latitude: loc.latitude,
-        longitude: loc.longitude,
-        accuracy: loc.accuracy,
-        date: now.toLocaleDateString(),
-        punchInTime: punchInTime?.time,
-        duration: calculateDuration(punchInTime?.timestamp, now.toISOString()),
-      };
+      const loc = await getRealLocation();
+      
+      if (!loc) {
+        showErrorToast("Unable to get location. Please enable GPS and try again.");
+        setIsLoading(false);
+        return;
+      }
 
-      // Console log the punch out data
-      console.log("=== PUNCH OUT DATA ===");
-      console.log(JSON.stringify(punchOutData, null, 2));
-      console.log("=====================");
+      // Call API
+      const result = await markAttendance(
+        loc.latitude,
+        loc.longitude,
+        loc.address,
+        "punch_out"
+      );
 
-      setPunchOutTime(punchOutData);
-      setIsPunchedIn(false);
+      if (result.success) {
+        const now = new Date();
+        const punchOutData = {
+          type: "PUNCH_OUT",
+          time: now.toLocaleTimeString("en-US", {
+            hour: "2-digit",
+            minute: "2-digit",
+            second: "2-digit",
+            hour12: true,
+          }),
+          timestamp: now.toISOString(),
+          latitude: loc.latitude,
+          longitude: loc.longitude,
+          accuracy: loc.accuracy,
+          address: loc.address,
+          date: now.toLocaleDateString(),
+          punchInTime: punchInTime?.time,
+          duration: result.totalHours || calculateDuration(punchInTime?.timestamp, now.toISOString()),
+        };
+
+        setPunchOutTime(punchOutData);
+        setAttendanceData(result.data.data);
+        setIsPunchedIn(false);
+        
+        showSuccessToast(
+          result.message || "Punched out successfully!"
+        );
+        
+        
+        // Refresh attendance status to get updated data
+        await fetchAttendanceStatus();
+      } else {
+        showErrorToast(result.message || "Failed to punch out");
+      }
     } catch (error) {
-      console.error("Punch out error:", error);
+      showErrorToast("An unexpected error occurred. Please try again.");
     } finally {
       setIsLoading(false);
     }
@@ -130,12 +393,24 @@ export default function PunchScreen() {
 
   const calculateDuration = (startTime, endTime) => {
     if (!startTime || !endTime) return "N/A";
-    const start = new Date(startTime);
-    const end = new Date(endTime);
-    const diff = Math.floor((end - start) / 1000);
-    const hours = Math.floor(diff / 3600);
-    const minutes = Math.floor((diff % 3600) / 60);
-    return `${hours}h ${minutes}m`;
+    
+    try {
+      const start = new Date(startTime);
+      const end = new Date(endTime);
+      
+      if (isNaN(start.getTime()) || isNaN(end.getTime())) {
+        return "N/A";
+      }
+      
+      const diff = Math.floor((end - start) / 1000);
+      if (diff < 0) return "N/A";
+      
+      const hours = Math.floor(diff / 3600);
+      const minutes = Math.floor((diff % 3600) / 60);
+      return `${hours}h ${minutes}m`;
+    } catch (error) {
+      return "N/A";
+    }
   };
 
   const punchButtonAnimatedStyle = useAnimatedStyle(() => ({
@@ -180,6 +455,66 @@ export default function PunchScreen() {
         <Text style={styles.greeting}>Welcome Back</Text>
         <Text style={styles.title}>Employee Attendance</Text>
         <Text style={styles.date}>{formatDate(currentTime)}</Text>
+        
+        {/* Authentication Status */}
+        {isCheckingAuth ? (
+          <View style={styles.authStatus}>
+            <ActivityIndicator size="small" color="#3b82f6" />
+            <Text style={styles.authStatusText}>Checking authentication...</Text>
+          </View>
+        ) : (
+          <>
+            <View style={[
+              styles.authStatus,
+              { backgroundColor: isAuthenticated ? "#ecfdf5" : "#fef2f2" }
+            ]}>
+              <View style={[
+                styles.authDot,
+                { backgroundColor: isAuthenticated ? "#10b981" : "#ef4444" }
+              ]} />
+              <Text style={[
+                styles.authStatusText,
+                { color: isAuthenticated ? "#10b981" : "#ef4444" }
+              ]}>
+                {isAuthenticated ? "Authenticated" : "Not Authenticated"}
+              </Text>
+              {!isAuthenticated && (
+                <TouchableOpacity
+                  style={styles.loginButton}
+                  onPress={() => router.push("/(auth)/login")}
+                >
+                  <Text style={styles.loginButtonText}>Login</Text>
+                </TouchableOpacity>
+              )}
+            </View>
+            
+            {/* Location Permission Status */}
+            <View style={[
+              styles.authStatus,
+              { backgroundColor: locationPermission ? "#ecfdf5" : "#fef2f2" }
+            ]}>
+              <Ionicons 
+                name={locationPermission ? "location" : "location-outline"} 
+                size={16} 
+                color={locationPermission ? "#10b981" : "#ef4444"} 
+              />
+              <Text style={[
+                styles.authStatusText,
+                { color: locationPermission ? "#10b981" : "#ef4444" }
+              ]}>
+                {locationPermission ? "Location Enabled" : "Location Disabled"}
+              </Text>
+              {!locationPermission && (
+                <TouchableOpacity
+                  style={styles.loginButton}
+                  onPress={requestLocationPermission}
+                >
+                  <Text style={styles.loginButtonText}>Enable</Text>
+                </TouchableOpacity>
+              )}
+            </View>
+          </>
+        )}
       </Animated.View>
 
       {/* CURRENT TIME CARD */}
@@ -241,13 +576,23 @@ export default function PunchScreen() {
             style={[styles.punchButtonWrapper, punchButtonAnimatedStyle]}
           >
             <TouchableOpacity
-              style={[styles.punchButton, styles.punchInButton]}
+              style={[
+                styles.punchButton,
+                styles.punchInButton,
+                (isPunchedIn || isLoading || !isAuthenticated || !locationPermission) && styles.punchButtonDisabled
+              ]}
               onPress={handlePunchIn}
-              disabled={isPunchedIn || isLoading}
+              disabled={isPunchedIn || isLoading || !isAuthenticated || !locationPermission}
               activeOpacity={0.85}
             >
-              <Ionicons name="log-in-outline" size={32} color="#fff" />
-              <Text style={styles.punchButtonText}>Punch In</Text>
+              {isLoading && !isPunchedIn ? (
+                <ActivityIndicator size="large" color="#fff" />
+              ) : (
+                <>
+                  <Ionicons name="log-in-outline" size={32} color="#fff" />
+                  <Text style={styles.punchButtonText}>Punch In</Text>
+                </>
+              )}
             </TouchableOpacity>
           </Animated.View>
 
@@ -255,13 +600,23 @@ export default function PunchScreen() {
             style={[styles.punchButtonWrapper, punchButtonAnimatedStyle]}
           >
             <TouchableOpacity
-              style={[styles.punchButton, styles.punchOutButton]}
+              style={[
+                styles.punchButton,
+                styles.punchOutButton,
+                (!isPunchedIn || isLoading || !isAuthenticated || !locationPermission) && styles.punchButtonDisabled
+              ]}
               onPress={handlePunchOut}
-              disabled={!isPunchedIn || isLoading}
+              disabled={!isPunchedIn || isLoading || !isAuthenticated || !locationPermission}
               activeOpacity={0.85}
             >
-              <Ionicons name="log-out-outline" size={32} color="#fff" />
-              <Text style={styles.punchButtonText}>Punch Out</Text>
+              {isLoading && isPunchedIn ? (
+                <ActivityIndicator size="large" color="#fff" />
+              ) : (
+                <>
+                  <Ionicons name="log-out-outline" size={32} color="#fff" />
+                  <Text style={styles.punchButtonText}>Punch Out</Text>
+                </>
+              )}
             </TouchableOpacity>
           </Animated.View>
         </View>
@@ -292,6 +647,9 @@ export default function PunchScreen() {
                   <View style={styles.detailContent}>
                     <Text style={styles.detailLabel}>Punch Out Time</Text>
                     <Text style={styles.detailValue}>{punchOutTime.time}</Text>
+                    {punchOutTime.address && (
+                      <Text style={styles.detailSub}>{punchOutTime.address}</Text>
+                    )}
                   </View>
                 </View>
 
@@ -303,6 +661,32 @@ export default function PunchScreen() {
                   <View style={styles.detailContent}>
                     <Text style={styles.detailLabel}>Total Duration</Text>
                     <Text style={styles.detailValue}>{punchOutTime.duration}</Text>
+                  </View>
+                </View>
+              </>
+            )}
+
+            {attendanceData && attendanceData.attendance_date && (
+              <>
+                <View style={styles.divider} />
+                <View style={styles.detailRow}>
+                  <View style={styles.detailIcon}>
+                    <Ionicons name="calendar-outline" size={20} color="#3b82f6" />
+                  </View>
+                  <View style={styles.detailContent}>
+                    <Text style={styles.detailLabel}>Attendance Date</Text>
+                    <Text style={styles.detailValue}>
+                      {(() => {
+                        try {
+                          const date = new Date(attendanceData.attendance_date);
+                          return isNaN(date.getTime()) 
+                            ? "Date not available" 
+                            : date.toLocaleDateString();
+                        } catch (error) {
+                          return "Date not available";
+                        }
+                      })()}
+                    </Text>
                   </View>
                 </View>
               </>
@@ -360,6 +744,43 @@ const styles = StyleSheet.create({
     fontSize: 13,
     color: "#94a3b8",
     fontWeight: "500",
+  },
+
+  authStatus: {
+    flexDirection: "row",
+    alignItems: "center",
+    gap: 8,
+    paddingHorizontal: 12,
+    paddingVertical: 8,
+    borderRadius: 8,
+    marginTop: 12,
+    borderWidth: 1,
+    borderColor: "rgba(0, 0, 0, 0.05)",
+  },
+
+  authDot: {
+    width: 8,
+    height: 8,
+    borderRadius: 4,
+  },
+
+  authStatusText: {
+    fontSize: 12,
+    fontWeight: "600",
+    flex: 1,
+  },
+
+  loginButton: {
+    paddingHorizontal: 12,
+    paddingVertical: 6,
+    backgroundColor: "#3b82f6",
+    borderRadius: 6,
+  },
+
+  loginButtonText: {
+    color: "#fff",
+    fontSize: 11,
+    fontWeight: "700",
   },
 
   timeCard: {
@@ -463,6 +884,10 @@ const styles = StyleSheet.create({
 
   punchOutButton: {
     backgroundColor: "#ef4444",
+  },
+
+  punchButtonDisabled: {
+    opacity: 0.5,
   },
 
   punchButtonText: {
